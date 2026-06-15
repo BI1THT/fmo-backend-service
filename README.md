@@ -2,7 +2,7 @@
 
 > [English](README_en.md)
 
-**v1.0.2** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
+**v1.0.3** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
 
 ---
 
@@ -244,6 +244,31 @@ Body: { "username": "${username}", "password": "${password}" }
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
 | `--log-level` | `log.level` | Info |
 
+> **配置热更新**：当 `~/.sas/config.json` 已存在时，再次使用 CLI 参数启动会自动更新对应字段并保存，无需手动编辑配置文件。
+
+### 管理员管理
+
+SAS 提供交互式管理员管理命令，用于配置谁拥有 super/admin 权限：
+
+```bash
+# 添加管理员（交互式）
+sas --add-admin [--config <path>]
+
+# 删除管理员（交互式）
+sas --remove-admin [--config <path>]
+
+# 列出当前管理员
+sas --list-admins [--config <path>]
+```
+
+- 首次添加时，若管理员列表为空，SAS 会自动将服务器自身（`server.uid` + `server.certFingerprint`）作为默认 super 管理员
+- 管理员信息存储在 `config.json` 的 `server.admins` 数组中
+- 可通过 `--config <path>` 指定非默认位置的配置文件
+
+### 启动地址显示
+
+当 `http.addr` 配置为 `0.0.0.0` 时，SAS 启动时会列出本机所有可用的 IPv4 地址及对应的认证端点 URL，方便确认访问地址。
+
 ---
 
 ## OTA 自动更新
@@ -354,7 +379,7 @@ fmo-server-authorizer-service/
 
 1. **无敏感数据**：`config.json` 中所有字段均为公开信息（呼号、证书指纹、网络地址等），不包含私钥或密码。安全性由设备端持有的私钥保证。
 2. **内网部署**：HTTP 端点应监听 `127.0.0.1` 或内网地址，不直接暴露到公网。
-3. **真相源**：首次初始化后，修改配置通过编辑 `config.json`，重启生效。
+3. **真相源**：首次初始化后，可通过编辑 `config.json` 修改配置（重启生效），也可通过 CLI 参数重新启动来自动更新配置。
 4. **升级**：`sas --update` 自动下载最新版本并重启（或关闭自动检查：`update.enabled = false`）。
 5. **设备侧**：FMO 设备固件需使用 SAS HTTP 认证器模式（MQTT CONNECT 时 username/password 携带证书信息）。
 

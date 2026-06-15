@@ -1,5 +1,6 @@
 using System.Formats.Cbor;
 using Sas.certs;
+using Sas.Logging;
 
 namespace Sas.Auth;
 
@@ -19,19 +20,18 @@ public static class HttpProofVerifier
         string role,
         string proofSigBase64Url)
     {
-        if (user.PublicKey == null || user.PublicKey.Length != 32)
-            return false;
-        if (serverFingerprintBytes == null || serverFingerprintBytes.Length != 32)
-            return false;
+        Logger.Debug($"ProofVerifier: pubKey.length={user.PublicKey?.Length ?? 0} serverFp.length={serverFingerprintBytes?.Length ?? 0}");
 
-        var claims = new Dictionary<string, string?>
+        if (user.PublicKey == null || user.PublicKey.Length != 32)
         {
-            ["serverUid"] = serverUid.ToString(),
-            ["targetCallsign"] = targetCallsign,
-            ["targetUID"] = targetUID.ToString(),
-            ["targetUrl"] = targetUrl,
-            ["targetPort"] = targetPort.ToString()
-        };
+            Logger.Debug("ProofVerifier: FAIL - user public key is null or not 32 bytes");
+            return false;
+        }
+        if (serverFingerprintBytes == null || serverFingerprintBytes.Length != 32)
+        {
+            Logger.Debug("ProofVerifier: FAIL - server fingerprint is null or not 32 bytes");
+            return false;
+        }
 
         try
         {
@@ -39,13 +39,24 @@ public static class HttpProofVerifier
                                targetUrl, targetPort, serverFingerprintBytes,
                                timestamp, user, role);
             var sig = Base64Url.Decode(proofSigBase64Url);
-            if (sig == null || sig.Length != 64)
-                return false;
 
-            return Ed25519.Verify(user.PublicKey, tbs, sig);
+            Logger.Debug($"ProofVerifier: TBS length={tbs.Length} bytes, sig length={sig?.Length ?? 0} bytes");
+            Logger.Debug($"ProofVerifier: TBS hex={Convert.ToHexString(tbs)[..Math.Min(64, tbs.Length * 2)]}...");
+            Logger.Debug($"ProofVerifier: role={role} timestamp={timestamp} callsign(upper)={targetCallsign.ToUpperInvariant()}");
+
+            if (sig == null || sig.Length != 64)
+            {
+                Logger.Debug($"ProofVerifier: FAIL - signature is null or not 64 bytes (got {sig?.Length ?? 0})");
+                return false;
+            }
+
+            var result = Ed25519.Verify(user.PublicKey, tbs, sig);
+            Logger.Debug($"ProofVerifier: Ed25519.Verify result={result}");
+            return result;
         }
-        catch
+        catch (Exception ex)
         {
+            Logger.Debug($"ProofVerifier: FAIL - exception: {ex.Message}");
             return false;
         }
     }

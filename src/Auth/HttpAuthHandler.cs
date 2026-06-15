@@ -26,11 +26,14 @@ sealed class HttpAuthHandler
 
     public AuthResult Process(string username, string password)
     {
+        Logger.Debug($"HTTP auth: >>> start processing username={username}");
+
         HttpPasswordPayload payload;
         try
         {
             var passwordJson = System.Text.Encoding.UTF8.GetString(
                 Base64Url.Decode(password));
+            Logger.Debug($"HTTP auth: decoded password JSON length={passwordJson.Length}");
             payload = JsonSerializer.Deserialize<HttpPasswordPayload>(passwordJson)
                 ?? throw new InvalidOperationException("null payload");
         }
@@ -39,6 +42,9 @@ sealed class HttpAuthHandler
             Logger.Warn($"HTTP auth: failed to parse password payload: {ex.Message}");
             throw new AuthDeniedException("invalid password format");
         }
+
+        Logger.Debug($"HTTP auth: payload: targetCallsign={payload.TargetCallsign} targetUID={payload.TargetUID} targetUrl={payload.TargetUrl} targetPort={payload.TargetPort} timestamp={payload.Timestamp} role={payload.Role}");
+        Logger.Debug($"HTTP auth: payload: serverFingerprint={payload.ServerFingerprint[..Math.Min(8, payload.ServerFingerprint.Length)]}...");
 
         IntermediateCaCert intermediate;
         UserCert user;
@@ -53,7 +59,11 @@ sealed class HttpAuthHandler
             throw new AuthDeniedException("invalid certificate format");
         }
 
+        Logger.Debug($"HTTP auth: intermediate: sn={intermediate.Sn} issuerSn={intermediate.IssuerSn}");
+        Logger.Debug($"HTTP auth: user: callsign={user.Callsign} uid={user.Uid} publicKey.length={user.PublicKey?.Length ?? 0}");
+
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        Logger.Debug($"HTTP auth: server time (UTC unix)={now}");
 
         var root = _rootStore.FindIssuer(intermediate);
         if (root == null)
@@ -61,6 +71,7 @@ sealed class HttpAuthHandler
             Logger.Warn($"HTTP auth: no trusted root found for intermediate sn={intermediate.Sn}");
             throw new AuthDeniedException("chain invalid: no trusted root");
         }
+        Logger.Debug($"HTTP auth: matched root: sn={root.Sn} subject={root.SubjectName}");
 
         var vr = _verifier.VerifyFullChain(root, intermediate, user, now);
         if (vr != VerifyResult.OK)
@@ -68,6 +79,7 @@ sealed class HttpAuthHandler
             Logger.Warn($"HTTP auth: chain validation failed: {CertVerifier.GetMessage(vr)}");
             throw new AuthDeniedException("chain invalid");
         }
+        Logger.Debug("HTTP auth: certificate chain verification passed");
 
         if (!string.Equals(username, user.Callsign, StringComparison.OrdinalIgnoreCase))
         {
@@ -164,12 +176,14 @@ sealed class HttpAuthHandler
             throw new AuthDeniedException("server identity mismatch");
         }
 
+        Logger.Debug($"HTTP auth: checking timestamp: payload={payload.Timestamp} server={now} drift={Math.Abs(now - payload.Timestamp)}s");
         if (!HttpProofVerifier.IsTimestampValid(payload.Timestamp, now))
         {
             Logger.Warn($"HTTP auth: timestamp drifted too far: payload={payload.Timestamp} server={now}");
             throw new AuthDeniedException("timestamp expired");
         }
 
+        Logger.Debug($"HTTP auth: verifying proof: serverUid={_config.Server.Uid} targetCallsign={_config.Server.Callsign} mqttHost={_config.Mqtt.Host} mqttPort={_config.Mqtt.Port}");
         var proofOk = HttpProofVerifier.Verify(
             _config.Server.Uid, _config.Server.Callsign, _config.Server.Uid,
             _config.Mqtt.Host, _config.Mqtt.Port, serverFpBytes,

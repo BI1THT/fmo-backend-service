@@ -2,7 +2,7 @@
 
 > [中文](README.md)
 
-**v1.0.2** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
+**v1.0.3** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
 
 ---
 
@@ -244,6 +244,31 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
 | `--log-level` | `log.level` | Info |
 
+> **Config Hot-Update**: When `~/.sas/config.json` already exists, launching with CLI arguments will automatically update the corresponding fields and save — no manual editing required.
+
+### Admin Management
+
+SAS provides interactive admin management commands to configure who has super/admin privileges:
+
+```bash
+# Add admin (interactive)
+sas --add-admin [--config <path>]
+
+# Remove admin (interactive)
+sas --remove-admin [--config <path>]
+
+# List current admins
+sas --list-admins [--config <path>]
+```
+
+- On first addition, if the admin list is empty, SAS automatically adds the server itself (`server.uid` + `server.certFingerprint`) as the default super admin
+- Admin information is stored in the `server.admins` array in `config.json`
+- Use `--config <path>` to specify a non-default config file location
+
+### Startup Address Display
+
+When `http.addr` is set to `0.0.0.0`, SAS lists all available IPv4 addresses with their corresponding auth endpoint URLs at startup, making it easy to identify the access address.
+
 ---
 
 ## OTA Auto-Update
@@ -354,7 +379,7 @@ fmo-server-authorizer-service/
 
 1. **No Sensitive Data**: All fields in `config.json` are public information (callsigns, certificate fingerprints, network addresses, etc.) — no private keys or passwords are stored. Security is guaranteed by the device-side private key.
 2. **Internal Deployment**: HTTP endpoint should listen on `127.0.0.1` or internal addresses, never exposed directly to the public internet.
-3. **Source of Truth**: After initial setup, modify configuration by editing `config.json` and restarting.
+3. **Source of Truth**: After initial setup, modify configuration by editing `config.json` (restart to apply), or re-launch with CLI arguments to auto-update the config.
 4. **Upgrades**: `sas --update` automatically downloads the latest version and restarts (disable: `update.enabled = false`).
 5. **Device Side**: FMO device firmware must use SAS HTTP authenticator mode (carrying certificate info in username/password during MQTT CONNECT).
 

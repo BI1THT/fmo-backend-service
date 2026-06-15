@@ -1,5 +1,7 @@
 using System.IO.Compression;
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -12,6 +14,24 @@ using Sas.Trust;
 if (args.Any(a => a == "--update"))
 {
     await CheckUpdateCommand();
+    return;
+}
+
+if (args.Any(a => a == "--add-admin"))
+{
+    Config.AddAdminCommand(args);
+    return;
+}
+
+if (args.Any(a => a == "--remove-admin"))
+{
+    Config.RemoveAdminCommand(args);
+    return;
+}
+
+if (args.Any(a => a == "--list-admins"))
+{
+    Config.ListAdminsCommand(args);
     return;
 }
 
@@ -53,7 +73,23 @@ var verifier = new CertVerifier();
 var crlManager = new CrlManager(config.Trust.RootsDir, config.Crl.RefreshSec);
 var aclStore = new AclStore(config.Trust.RootsDir);
 
-Logger.Info($"SAS HTTP auth listening on {config.Http.Addr}:{config.Http.Port}");
+Logger.Info("SAS HTTP auth listening on:");
+if (config.Http.Addr == "0.0.0.0" || config.Http.Addr == "+")
+{
+    foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+    {
+        if (ni.OperationalStatus != OperationalStatus.Up) continue;
+        foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+        {
+            if (ua.Address.AddressFamily == AddressFamily.InterNetwork)
+                Logger.Info($"  http://{ua.Address}:{config.Http.Port}/auth");
+        }
+    }
+}
+else
+{
+    Logger.Info($"  http://{config.Http.Addr}:{config.Http.Port}/auth");
+}
 
 crlManager.Initialize(rootStore.AllRoots.ToArray());
 
@@ -403,6 +439,12 @@ sealed class Config
             if (File.Exists(ConfigPath))
             {
                 config = LoadFromFile();
+                if (HasInitArgsBeyondConfig(flatArgs))
+                {
+                    ApplyArgsToConfig(config, args);
+                    SaveToFile(config);
+                    Console.WriteLine($"Config updated and saved to {ConfigPath}");
+                }
             }
             else if (HasInitArgsBeyondConfig(flatArgs))
             {
@@ -421,6 +463,12 @@ sealed class Config
             if (File.Exists(ConfigPath))
             {
                 config = LoadFromFile();
+                if (HasInitArgsBeyondConfig(flatArgs))
+                {
+                    ApplyArgsToConfig(config, args);
+                    SaveToFile(config);
+                    Console.WriteLine($"Config updated and saved to {ConfigPath}");
+                }
             }
             else if (args.Length == 0)
             {
@@ -445,6 +493,245 @@ sealed class Config
         Logger.SetLevel(config.Log.Level);
         Validate(config);
         return config;
+    }
+
+    public static void AddAdminCommand(string[] args)
+    {
+        if (Console.IsInputRedirected)
+            Fail("--add-admin requires an interactive terminal.");
+
+        var config = LoadConfigForManagement(args);
+
+        Console.WriteLine("══════════════════════════════════════════════════════════");
+        Console.WriteLine("  FMO SAS — 管理员配置 / Admin Management");
+        Console.WriteLine("══════════════════════════════════════════════════════════");
+        Console.WriteLine();
+
+        if (config.Server.Uid == 0 || string.IsNullOrEmpty(config.Server.Callsign) || string.IsNullOrEmpty(config.Server.CertFingerprint))
+            Fail("  ✗ 服务器基础配置不完整（uid/callsign/certFingerprint），请先运行 sas.exe 完成首次配置。");
+
+        var admins = config.Server.Admins.ToList();
+
+        if (admins.Count == 0)
+        {
+            Console.WriteLine("  当前无管理员配置。");
+            Console.WriteLine("  将自动添加服务器自身为默认 super 管理员:");
+            Console.WriteLine();
+            var fpDisp = config.Server.CertFingerprint.Length > 12
+                ? config.Server.CertFingerprint[..12] + "..."
+                : config.Server.CertFingerprint;
+            Console.WriteLine("  ┌─ 默认 Super 管理员 ────────────────────────");
+            Console.WriteLine($"  │  UID:         {config.Server.Uid} (server.uid)");
+            Console.WriteLine($"  │  Fingerprint: {fpDisp} (server.certFingerprint)");
+            Console.WriteLine("  │  Role:        super");
+            Console.WriteLine("  └─────────────────────────────────────────────");
+            Console.WriteLine();
+
+            admins.Add(new AdminEntry
+            {
+                Uid = config.Server.Uid,
+                CertFingerprint = config.Server.CertFingerprint,
+                Role = "super"
+            });
+        }
+        else
+        {
+            Console.WriteLine($"  当前管理员 ({admins.Count} 位):");
+            PrintAdminList(admins);
+            Console.WriteLine();
+        }
+
+        Console.WriteLine("  ── 添加新管理员 / Add New Admin ──");
+        Console.WriteLine();
+
+        var uid = PromptLong("  Admin UID / 管理员 UID", 0, required: true);
+
+        var existing = admins.FirstOrDefault(a => a.Uid == uid);
+        if (existing != null)
+        {
+            Console.WriteLine($"  ⚠ UID={uid} 已存在于管理员列表中 (Role={existing.Role})");
+            var cont = PromptChoice("  是否仍要添加? / Continue?", ["Yes / 是", "No / 否"]);
+            if (cont == 2)
+            {
+                Console.WriteLine("  已取消。");
+                return;
+            }
+        }
+
+        var fp = PromptCertFingerprint("  Cert Fingerprint / 证书指纹 (base64url, 43字符)", "");
+        while (string.IsNullOrEmpty(fp))
+        {
+            Console.WriteLine("  证书指纹为必填项。");
+            fp = PromptCertFingerprint("  Cert Fingerprint / 证书指纹 (base64url, 43字符)", "");
+        }
+
+        Console.WriteLine("  Role / 角色:");
+        var roleIdx = PromptChoice("  选择角色", ["super", "admin"]);
+        var role = roleIdx == 1 ? "super" : "admin";
+
+        Console.WriteLine();
+        Console.WriteLine("  ┌─ 确认 / Confirm ───────────────────────────");
+        Console.WriteLine($"  │  UID:         {uid}");
+        Console.WriteLine($"  │  Fingerprint: {(fp.Length > 12 ? fp[..12] + "..." : fp)}");
+        Console.WriteLine($"  │  Role:        {role}");
+        Console.WriteLine("  └─────────────────────────────────────────────");
+        Console.WriteLine();
+
+        var save = PromptChoice("  Save? / 保存?", ["Yes / 是", "No / 否"]);
+        if (save == 2)
+        {
+            Console.WriteLine("  已取消。");
+            return;
+        }
+
+        admins.Add(new AdminEntry { Uid = uid, CertFingerprint = fp, Role = role });
+        config.Server.Admins = admins.ToArray();
+        SaveToFile(config);
+        Console.WriteLine($"  ✓ 已保存到 {ConfigPath}（当前共 {admins.Count} 位管理员）");
+    }
+
+    public static void RemoveAdminCommand(string[] args)
+    {
+        if (Console.IsInputRedirected)
+            Fail("--remove-admin requires an interactive terminal.");
+
+        var config = LoadConfigForManagement(args);
+
+        Console.WriteLine("══════════════════════════════════════════════════════════");
+        Console.WriteLine("  FMO SAS — 删除管理员 / Remove Admin");
+        Console.WriteLine("══════════════════════════════════════════════════════════");
+        Console.WriteLine();
+
+        var admins = config.Server.Admins.ToList();
+
+        if (admins.Count == 0)
+        {
+            Console.WriteLine("  当前无管理员配置。");
+            Console.WriteLine("  提示：运行时 SAS 会自动将服务器自身作为 super 管理员。");
+            Console.WriteLine("  如需显式配置，请使用 --add-admin。");
+            return;
+        }
+
+        Console.WriteLine($"  当前管理员 ({admins.Count} 位):");
+        PrintAdminList(admins);
+        Console.WriteLine();
+
+        int idx;
+        while (true)
+        {
+            Console.Write($"  删除哪个? / Remove which? [1-{admins.Count}]: ");
+            var input = Console.ReadLine()?.Trim() ?? "";
+            if (int.TryParse(input, out idx) && idx >= 1 && idx <= admins.Count)
+                break;
+            Console.WriteLine($"  无效选择，请输入 1-{admins.Count}。");
+        }
+
+        var target = admins[idx - 1];
+        Console.WriteLine();
+
+        if (string.Equals(target.Role, "super", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"  ⚠ 警告：即将删除 super 管理员 (UID={target.Uid})");
+            Console.WriteLine("    删除后如需重新配置 super，请再次运行 --add-admin");
+            var confirm = PromptChoice("  确认删除? / Confirm?", ["Yes / 是", "No / 否"]);
+            if (confirm == 2)
+            {
+                Console.WriteLine("  已取消。");
+                return;
+            }
+        }
+        else
+        {
+            var confirm = PromptChoice($"  确认删除 UID={target.Uid} ({target.Role})?", ["Yes / 是", "No / 否"]);
+            if (confirm == 2)
+            {
+                Console.WriteLine("  已取消。");
+                return;
+            }
+        }
+
+        admins.RemoveAt(idx - 1);
+        config.Server.Admins = admins.ToArray();
+        SaveToFile(config);
+
+        Console.WriteLine();
+        if (admins.Count == 0)
+        {
+            Console.WriteLine($"  ✓ 已删除 UID={target.Uid}，管理员列表现为空");
+            Console.WriteLine("  提示：运行时 SAS 将自动回退为服务器自身作为 super 管理员");
+        }
+        else
+        {
+            Console.WriteLine($"  ✓ 已删除 UID={target.Uid}，当前共 {admins.Count} 位管理员");
+        }
+        Console.WriteLine($"  ✓ 已保存到 {ConfigPath}");
+    }
+
+    public static void ListAdminsCommand(string[] args)
+    {
+        var config = LoadConfigForManagement(args);
+
+        var admins = config.Server.Admins.ToList();
+
+        if (admins.Count == 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("  管理员列表为空。");
+            Console.WriteLine($"  运行时 SAS 自动将服务器自身 (UID={config.Server.Uid}) 作为 super 管理员。");
+            Console.WriteLine("  使用 --add-admin 显式配置管理员。");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  管理员列表 / Admin List (共 {admins.Count} 位):");
+        PrintAdminList(admins);
+        Console.WriteLine();
+        Console.WriteLine("  提示：使用 --add-admin 添加，--remove-admin 删除");
+    }
+
+    private static Config LoadConfigForManagement(string[] args)
+    {
+        var flatArgs = FlattenEqArgs(args);
+        var explicitPath = ExtractConfigArg(flatArgs);
+
+        ConfigPath = explicitPath
+            ?? Path.Combine(HomeDir, ".sas", "config.json");
+
+        if (!File.Exists(ConfigPath))
+            Fail($"  ✗ 配置文件不存在: {ConfigPath}\n    请先运行 sas.exe 完成首次配置，或指定 --config <path>");
+
+        var json = File.ReadAllText(ConfigPath);
+        var config = JsonSerializer.Deserialize<Config>(json, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (config == null)
+            Fail($"  ✗ 配置文件解析失败: {ConfigPath}");
+
+        config!.Http ??= new();
+        config!.Server ??= new();
+        config!.Mqtt ??= new();
+        config!.Trust ??= new();
+        config!.Crl ??= new();
+        config!.Log ??= new();
+        config!.Update ??= new();
+
+        return config!;
+    }
+
+    private static void PrintAdminList(List<AdminEntry> admins)
+    {
+        Console.WriteLine("  ──────────────────────────────────────────────");
+        for (int i = 0; i < admins.Count; i++)
+        {
+            var a = admins[i];
+            var fpDisp = a.CertFingerprint.Length > 12
+                ? a.CertFingerprint[..12] + "..."
+                : a.CertFingerprint;
+            Console.WriteLine($"  [{i + 1}] UID={a.Uid,-8} Role={a.Role,-6} FP={fpDisp}");
+        }
+        Console.WriteLine("  ──────────────────────────────────────────────");
     }
 
     private static Config LoadFromFile()
@@ -527,6 +814,60 @@ sealed class Config
         }
 
         return config;
+    }
+
+    private static void ApplyArgsToConfig(Config config, string[] args)
+    {
+        var flatArgs = FlattenEqArgs(args);
+
+        for (int i = 0; i < flatArgs.Count; i++)
+        {
+            switch (flatArgs[i])
+            {
+                case "--server-uid" when i + 1 < flatArgs.Count:
+                    config.Server.Uid = long.Parse(flatArgs[++i]);
+                    break;
+                case "--server-callsign" when i + 1 < flatArgs.Count:
+                    config.Server.Callsign = flatArgs[++i];
+                    break;
+                case "--mqtt-host" when i + 1 < flatArgs.Count:
+                    config.Mqtt.Host = flatArgs[++i];
+                    break;
+                case "--mqtt-port" when i + 1 < flatArgs.Count:
+                    config.Mqtt.Port = int.Parse(flatArgs[++i]);
+                    break;
+                case "--allow-issuer-sn" when i + 1 < flatArgs.Count:
+                    config.Trust.AllowIssuerSn = flatArgs[++i]
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(long.Parse)
+                        .ToArray();
+                    break;
+                case "--roots-dir" when i + 1 < flatArgs.Count:
+                    config.Trust.RootsDir = flatArgs[++i];
+                    break;
+                case "--issuer-sn" when i + 1 < flatArgs.Count:
+                    config.Server.IssuerSn = long.Parse(flatArgs[++i]);
+                    break;
+                case "--cert-fingerprint" when i + 1 < flatArgs.Count:
+                    config.Server.CertFingerprint = flatArgs[++i];
+                    break;
+                case "--crl-refresh" when i + 1 < flatArgs.Count:
+                    config.Crl.RefreshSec = int.Parse(flatArgs[++i]);
+                    break;
+                case "--log-level" when i + 1 < flatArgs.Count:
+                    config.Log.Level = flatArgs[++i];
+                    break;
+                case "--http-port" when i + 1 < flatArgs.Count:
+                    config.Http.Port = int.Parse(flatArgs[++i]);
+                    break;
+                case "--http-addr" when i + 1 < flatArgs.Count:
+                    config.Http.Addr = flatArgs[++i];
+                    break;
+                case "--http-ttl" when i + 1 < flatArgs.Count:
+                    config.Http.TtlSec = int.Parse(flatArgs[++i]);
+                    break;
+            }
+        }
     }
 
     private static List<string> FlattenEqArgs(string[] args)
@@ -884,6 +1225,9 @@ sealed class Config
         Console.WriteLine("  sas.exe                                  Interactive config setup");
         Console.WriteLine("  sas.exe --server-uid ... --cert-fingerprint ...   CLI init");
         Console.WriteLine("  sas.exe --update                         Check and apply updates");
+        Console.WriteLine("  sas.exe --add-admin [--config <path>]    Add admin interactively");
+        Console.WriteLine("  sas.exe --remove-admin [--config <path>] Remove admin interactively");
+        Console.WriteLine("  sas.exe --list-admins [--config <path>]  List current admins");
         Console.WriteLine("  sas.exe --help                           Show this help");
         Console.WriteLine();
         Console.WriteLine("Required:");

@@ -245,7 +245,7 @@ sealed class HttpAuthHandler
             catch { continue; }
 
             if (adminFp.AsSpan().SequenceEqual(userFp))
-                return string.IsNullOrEmpty(admin.Role) ? "super" : admin.Role;
+                return string.IsNullOrEmpty(admin.Role) ? "admin" : admin.Role;
         }
 
         return user.Uid == server.Uid ? "super" : "user";

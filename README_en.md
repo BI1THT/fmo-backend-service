@@ -2,7 +2,7 @@
 
 > [中文](README.md)
 
-**v1.0.3** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
+**v1.0.5** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
 
 ---
 

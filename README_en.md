@@ -169,6 +169,46 @@ curl -X POST http://127.0.0.1:8080/auth \
 
 ---
 
+## Docker Compose Deployment
+
+The included `docker-compose.yml` starts SAS and EMQX together. EMQX and SAS share an internal Docker network, and the HTTP authenticator is preconfigured to call `http://sas:8080/auth`; no additional Dashboard authentication setup is required.
+
+```bash
+# Create the deployment configuration and set the server UID, callsign,
+# certificate fingerprint, and EMQX Dashboard password.
+cp .env.example .env
+
+# Start SAS and EMQX.
+docker compose up -d
+
+# View service logs.
+docker compose logs -f sas emqx
+```
+
+On Windows PowerShell, use:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Published ports:
+
+| Service | Address | Purpose |
+|---------|---------|---------|
+| EMQX MQTT | `tcp://<server>:1883` | FMO device connections |
+| EMQX Dashboard | `http://<server>:18083` | Sign in with the Dashboard credentials in `.env` |
+
+The SAS HTTP authentication port is exposed only on the internal Compose network and is not reachable directly from the host. The `sas-data` volume persists SAS configuration and root certificates, while `emqx-data` persists EMQX data. Do not remove these volumes unless you intend to fully reinitialize the deployment.
+
+After updating images, run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+---
+
 ## EMQX Configuration
 
 Configure HTTP Password Authentication in EMQX Dashboard:
@@ -285,6 +325,22 @@ sas --list-clusters [--config <path>]
 - Cluster node information is stored in the `Mqtt.clusters` array in `config.json`
 - Once added, devices connecting to these Brokers can also authenticate through this SAS
 - The cluster node's UID owner automatically gets the super role on that node
+
+For Docker Compose deployments, register an independent FMO service through the shared SAS configuration volume:
+
+```bash
+# Enter the external FMO service UID, callsign, MQTT host, port, and certificate fingerprint when prompted
+docker compose --profile management run --rm sasctl --add-cluster
+
+# List or remove registered external services
+docker compose --profile management run --rm sasctl --list-clusters
+docker compose --profile management run --rm sasctl --remove-cluster
+
+# Reload the updated configuration in the long-running SAS process
+docker compose restart sas
+```
+
+Set the external service's MQTT Host to a hostname or IP address reachable by devices, not to a service name on this Compose network.
 
 ### Startup Address Display
 

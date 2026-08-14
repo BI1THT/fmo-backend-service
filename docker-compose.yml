@@ -14,11 +14,47 @@ services:
       - ${SAS_MQTT_PORT:-1883}
       - --cert-fingerprint
       - ${SAS_CERT_FINGERPRINT:?Set SAS_CERT_FINGERPRINT in .env}
-    ports:
-      - "8080:8080"
-      - "1883:1883"
+    expose:
+      - "8080"
     volumes:
       - sas-data:/home/app/.sas
+    networks:
+      - fmo
+
+  sasctl:
+    image: ghcr.io/bg5esn/fmo-server-authrozier-service:latest
+    profiles:
+      - management
+    stdin_open: true
+    tty: true
+    volumes:
+      - sas-data:/home/app/.sas
+    networks:
+      - fmo
+
+  emqx:
+    image: emqx/emqx:5.8.6
+    container_name: fmo-emqx
+    restart: unless-stopped
+    depends_on:
+      - sas
+    environment:
+      EMQX_AUTHENTICATION__1: >-
+        {mechanism = password_based, backend = http, method = post, url = "http://sas:8080/auth", headers = {"Content-Type" = "application/json"}, body = {username = "$${username}", password = "$${password}"}}
+      EMQX_DASHBOARD__DEFAULT_USERNAME: '"${EMQX_DASHBOARD_USERNAME:-admin}"'
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: '"${EMQX_DASHBOARD_PASSWORD:?Set EMQX_DASHBOARD_PASSWORD in .env}"'
+    ports:
+      - "1883:1883"
+      - "18083:18083"
+    volumes:
+      - emqx-data:/opt/emqx/data
+    networks:
+      - fmo
 
 volumes:
   sas-data:
+  emqx-data:
+
+networks:
+  fmo:
+    driver: bridge

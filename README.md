@@ -169,6 +169,45 @@ curl -X POST http://127.0.0.1:8080/auth \
 
 ---
 
+## Docker Compose 部署
+
+仓库提供 `docker-compose.yml`，一次启动 SAS 和 EMQX。EMQX 与 SAS 位于同一内部 Docker 网络，HTTP 认证器已配置为调用 `http://sas:8080/auth`；无需在 Dashboard 中重复创建认证器。
+
+```bash
+# 创建实际部署配置并填写服务器 UID、呼号、证书指纹和 EMQX Dashboard 密码
+cp .env.example .env
+
+# 启动 SAS 与 EMQX
+docker compose up -d
+
+# 查看服务日志
+docker compose logs -f sas emqx
+```
+
+Windows PowerShell 可用：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+对外端口：
+
+| 服务 | 地址 | 用途 |
+|------|------|------|
+| EMQX MQTT | `tcp://<server>:1883` | FMO 设备连接 |
+| EMQX Dashboard | `http://<server>:18083` | 使用 `.env` 中的 Dashboard 账号登录 |
+
+SAS 的 HTTP 认证端口仅在 Compose 内部网络开放，不能从宿主机直接访问。`sas-data` 卷持久化 SAS 配置和根证书，`emqx-data` 卷持久化 EMQX 数据；不要删除这些卷，除非需要完全重新初始化。
+
+更新镜像后执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+---
+
 ## EMQX 配置
 
 在 EMQX Dashboard 中配置 HTTP 密码认证：
@@ -285,6 +324,22 @@ sas --list-clusters [--config <path>]
 - 集群节点信息存储在 `config.json` 的 `Mqtt.clusters` 数组中
 - 添加后，连接到这些 Broker 的设备也能通过本 SAS 完成认证
 - 集群节点的 UID 所有者在该节点上自动获得 super 角色
+
+使用 Docker Compose 部署时，可将其他独立 FMO 服务的公开 MQTT 地址登记到共享的 SAS 配置卷中：
+
+```bash
+# 按提示输入外部 FMO 服务的 UID、呼号、MQTT 主机、端口和证书指纹
+docker compose --profile management run --rm sasctl --add-cluster
+
+# 查看或删除已登记的外部服务
+docker compose --profile management run --rm sasctl --list-clusters
+docker compose --profile management run --rm sasctl --remove-cluster
+
+# 使常驻 SAS 进程重新加载修改后的配置
+docker compose restart sas
+```
+
+外部服务的 MQTT Host 应填写可从设备访问的域名或 IP 地址，而不是本 Compose 网络中的服务名。
 
 ### 启动地址显示
 

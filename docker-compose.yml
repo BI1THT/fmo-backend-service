@@ -3,8 +3,20 @@ services:
     image: ghcr.io/bg5esn/fmo-server-authrozier-service:latest
     container_name: fmo-sas
     restart: unless-stopped
+    command:
+      - --server-uid
+      - ${SAS_SERVER_UID:?Set SAS_SERVER_UID in .env}
+      - --server-callsign
+      - ${SAS_SERVER_CALLSIGN:?Set SAS_SERVER_CALLSIGN in .env}
+      - --mqtt-host
+      - ${SAS_MQTT_HOST:?Set SAS_MQTT_HOST in .env}
+      - --mqtt-port
+      - ${SAS_MQTT_PORT:-1883}
+      - --cert-fingerprint
+      - ${SAS_CERT_FINGERPRINT:?Set SAS_CERT_FINGERPRINT in .env}
     ports:
       - "8080:8080"
+      - "1883:1883"
     volumes:
       - sas-data:/home/app/.sas
 

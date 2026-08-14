@@ -241,7 +241,7 @@ static async Task CheckVersionAsync(string currentVersion)
 
         if (IsRunningInDocker())
         {
-            Logger.Warn("│  Update: docker pull ghcr.io/bg5esn/fmo-server-authrozier-service:latest && docker compose up -d");
+            Logger.Warn("│  Update: docker pull fmo/sas:latest && docker compose up -d");
         }
         else
         {
@@ -265,7 +265,7 @@ static async Task CheckUpdateCommand()
     {
         Console.WriteLine();
         Console.WriteLine("Running in Docker. Update with:");
-        Console.WriteLine("  docker pull ghcr.io/bg5esn/fmo-server-authrozier-service:latest && docker compose up -d");
+        Console.WriteLine("  docker pull fmo/sas:latest && docker compose up -d");
         return;
     }
 

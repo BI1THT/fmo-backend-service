@@ -68,6 +68,9 @@ Only devices holding legitimate certificates can establish communication. Securi
 - Cluster Support – Multiple MQTT Brokers sharing a single SAS instance for authentication
 - OTA Auto-Update – Built-in version checking and automatic upgrades
 - Cross-Platform – Windows / Linux / macOS (x64 & ARM64)
+- Docker Compose Deployment – Orchestrates SAS and EMQX together with an internal HTTP authentication callback
+- Persistent Runtime Configuration – `sas-data` and `emqx-data` volumes retain configuration, certificates, and broker data
+- Image-Based Updates – Pull the latest GHCR image and let Compose recreate services as needed, reducing manual work and service recovery time
 
 ## Typical Deployment Scenarios
 
@@ -200,12 +203,14 @@ Published ports:
 
 The SAS HTTP authentication port is exposed only on the internal Compose network and is not reachable directly from the host. The `sas-data` volume persists SAS configuration and root certificates, while `emqx-data` persists EMQX data. Do not remove these volumes unless you intend to fully reinitialize the deployment.
 
-After updating images, run:
+To update, pull the latest images and let Compose recreate only services that require an update:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
+
+This two-command workflow avoids manually stopping, deleting, and recreating containers, reducing maintenance operations and service recovery time. A single-instance service still has a brief connection interruption while it is recreated.
 
 ---
 
@@ -307,6 +312,14 @@ sas --list-admins [--config <path>]
 - The admin list only stores regular admins (admin role), stored in the `Server.admins` array in `config.json`
 - Use `--config <path>` to specify a non-default config file location
 
+For Docker Compose deployments, manage administrators interactively in the running SAS container:
+
+```bash
+docker exec -it fmo-sas dotnet sas.dll --add-admin
+docker exec -it fmo-sas dotnet sas.dll --remove-admin
+docker exec -it fmo-sas dotnet sas.dll --list-admins
+```
+
 ### Cluster Management
 
 If you have multiple MQTT Brokers sharing a single SAS instance, you can add cluster nodes:
@@ -330,11 +343,11 @@ For Docker Compose deployments, register an independent FMO service through the 
 
 ```bash
 # Enter the external FMO service UID, callsign, MQTT host, port, and certificate fingerprint when prompted
-docker compose --profile management run --rm sasctl --add-cluster
+docker exec -it fmo-sas dotnet sas.dll --add-cluster
 
 # List or remove registered external services
-docker compose --profile management run --rm sasctl --list-clusters
-docker compose --profile management run --rm sasctl --remove-cluster
+docker exec -it fmo-sas dotnet sas.dll --list-clusters
+docker exec -it fmo-sas dotnet sas.dll --remove-cluster
 
 # Reload the updated configuration in the long-running SAS process
 docker compose restart sas

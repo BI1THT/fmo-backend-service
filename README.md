@@ -68,6 +68,9 @@ FMO Server Authorizer Service 把信任锚点从"网络上的中心服务器"下
 - 集群支持 – 多个 MQTT Broker 共享同一 SAS 实例进行认证
 - OTA 自动更新 – 内置版本检查与自动升级
 - 跨平台 – Windows / Linux / macOS (x64 & ARM64)
+- Docker Compose 部署 – 一次编排 SAS 与 EMQX，并自动配置内部 HTTP 认证回调
+- 持久化运行配置 – `sas-data` 与 `emqx-data` 卷保留配置、证书和 Broker 数据
+- 镜像化更新 – 通过拉取最新 GHCR 镜像并由 Compose 按需重建服务，减少人工操作和业务恢复时间
 
 ## 典型部署场景
 
@@ -199,12 +202,14 @@ Copy-Item .env.example .env
 
 SAS 的 HTTP 认证端口仅在 Compose 内部网络开放，不能从宿主机直接访问。`sas-data` 卷持久化 SAS 配置和根证书，`emqx-data` 卷持久化 EMQX 数据；不要删除这些卷，除非需要完全重新初始化。
 
-更新镜像后执行：
+更新时先拉取最新镜像，再由 Compose 仅重建需要更新的服务：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
+
+该流程将拉取与重建统一为两条命令，避免手动停止、删除和重新创建容器，可减少维护期间的操作次数和业务恢复时间；单实例服务在自身重建期间仍会有短暂连接中断。
 
 ---
 
@@ -306,6 +311,14 @@ sas --list-admins [--config <path>]
 - 管理员列表仅存储普通管理员（admin 角色），存储在 `config.json` 的 `Server.admins` 数组中
 - 可通过 `--config <path>` 指定非默认位置的配置文件
 
+Docker Compose 部署使用运行中的 SAS 容器进行交互式管理：
+
+```bash
+docker exec -it fmo-sas dotnet sas.dll --add-admin
+docker exec -it fmo-sas dotnet sas.dll --remove-admin
+docker exec -it fmo-sas dotnet sas.dll --list-admins
+```
+
 ### 集群管理
 
 如果你有多个 MQTT Broker 共用同一个 SAS 实例，可以添加集群节点：
@@ -329,11 +342,11 @@ sas --list-clusters [--config <path>]
 
 ```bash
 # 按提示输入外部 FMO 服务的 UID、呼号、MQTT 主机、端口和证书指纹
-docker compose --profile management run --rm sasctl --add-cluster
+docker exec -it fmo-sas dotnet sas.dll --add-cluster
 
 # 查看或删除已登记的外部服务
-docker compose --profile management run --rm sasctl --list-clusters
-docker compose --profile management run --rm sasctl --remove-cluster
+docker exec -it fmo-sas dotnet sas.dll --list-clusters
+docker exec -it fmo-sas dotnet sas.dll --remove-cluster
 
 # 使常驻 SAS 进程重新加载修改后的配置
 docker compose restart sas

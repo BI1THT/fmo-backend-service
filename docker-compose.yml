@@ -21,17 +21,6 @@ services:
     networks:
       - fmo
 
-  sasctl:
-    image: ghcr.io/bg5esn/fmo-server-authrozier-service:latest
-    profiles:
-      - management
-    stdin_open: true
-    tty: true
-    volumes:
-      - sas-data:/home/app/.sas
-    networks:
-      - fmo
-
   emqx:
     image: emqx/emqx:5.8.6
     container_name: fmo-emqx

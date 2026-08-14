@@ -1,0 +1,12 @@
+services:
+  sas:
+    image: ghcr.io/bg5esn/fmo-server-authrozier-service:latest
+    container_name: fmo-sas
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - sas-data:/home/app/.sas
+
+volumes:
+  sas-data:

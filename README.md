@@ -174,17 +174,17 @@ curl -X POST http://127.0.0.1:8080/auth \
 
 ## Docker Compose 部署
 
-仓库提供 `docker-compose.yml`，一次启动 SAS 和 EMQX。EMQX 与 SAS 位于同一内部 Docker 网络，HTTP 认证器已配置为调用 `http://sas:8080/auth`；无需在 Dashboard 中重复创建认证器。
+仓库提供 `docker-compose.yml`，一次启动 SAS、EMQX 和 FMO Audit Service (FAS)。三个服务位于同一内部 Docker 网络；EMQX 的 HTTP 认证器已配置为调用 `http://sas:8080/auth`，无需在 Dashboard 中重复创建认证器。
 
 ```bash
 # 创建实际部署配置并填写服务器 UID、呼号、证书指纹和 EMQX Dashboard 密码
 cp .env.example .env
 
-# 启动 SAS 与 EMQX
+# 启动 SAS、EMQX 与 FAS
 docker compose up -d
 
 # 查看服务日志
-docker compose logs -f sas emqx
+docker compose logs -f sas emqx fas
 ```
 
 Windows PowerShell 可用：
@@ -199,8 +199,21 @@ Copy-Item .env.example .env
 |------|------|------|
 | EMQX MQTT | `tcp://<server>:1883` | FMO 设备连接 |
 | EMQX Dashboard | `http://<server>:18083` | 使用 `.env` 中的 Dashboard 账号登录 |
+| FAS Web UI | `http://<server>:9527` | 初始化管理员并配置审计服务 |
 
 SAS 的 HTTP 认证端口仅在 Compose 内部网络开放，不能从宿主机直接访问。`sas-data` 卷持久化 SAS 配置和根证书，`emqx-data` 卷持久化 EMQX 数据；不要删除这些卷，除非需要完全重新初始化。
+
+### FAS 配置
+
+[FMO Audit Service (FAS)](https://github.com/bi9bbl/fmo-audit-service) 已加入此 Compose 网络，但不会接收初始化参数。先在 `http://<server>:18083` 创建 API Key / Secret，再访问 FAS Web UI 完成管理员初始化和 EMQX 连接配置。
+
+FAS 的 EMQX 目标 URL 必须填写：
+
+```text
+http://emqx:18083
+```
+
+`emqx` 是 Compose 服务名，Docker 内部 DNS 会将它解析到 EMQX 容器。不要填写 `http://localhost:18083`，它会指向 FAS 容器自身；也不需要填写宿主机 IP。
 
 更新时先拉取最新镜像，再由 Compose 仅重建需要更新的服务：
 

@@ -40,9 +40,21 @@ services:
     networks:
       - fmo
 
+  fas:
+    image: ghcr.io/bg5esn/fmo-audit-service:latest
+    container_name: fmo-audit
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    volumes:
+      - fas-data:/data
+    networks:
+      - fmo
+
 volumes:
   sas-data:
   emqx-data:
+  fas-data:
 
 networks:
   fmo:

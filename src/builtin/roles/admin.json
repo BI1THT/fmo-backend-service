@@ -11,6 +11,6 @@
     "FMO/LATE/UID_V1/{uid}",
     "FMO/PROFILE",
     "FMO/REMOTE_CONTROL",
-    "FMO/SERVER_INFO"
+    "FMO/SERVER_INFO/#"
   ]
 }

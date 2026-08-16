@@ -68,6 +68,9 @@ Only devices holding legitimate certificates can establish communication. Securi
 - Cluster Support – Multiple MQTT Brokers sharing a single SAS instance for authentication
 - OTA Auto-Update – Built-in version checking and automatic upgrades
 - Cross-Platform – Windows / Linux / macOS (x64 & ARM64)
+- Docker Compose Deployment – Orchestrates SAS and EMQX together with an internal HTTP authentication callback
+- Persistent Runtime Configuration – `sas-data` and `emqx-data` volumes retain configuration, certificates, and broker data
+- Image-Based Updates – Pull the latest GHCR image and let Compose recreate services as needed, reducing manual work and service recovery time
 
 ## Typical Deployment Scenarios
 
@@ -169,6 +172,48 @@ curl -X POST http://127.0.0.1:8080/auth \
 
 ---
 
+## Docker Compose Deployment
+
+The included `docker-compose.yml` starts SAS and EMQX together. EMQX and SAS share an internal Docker network, and the HTTP authenticator is preconfigured to call `http://sas:8080/auth`; no additional Dashboard authentication setup is required.
+
+```bash
+# Create the deployment configuration and set the server UID, callsign,
+# certificate fingerprint, and EMQX Dashboard password.
+cp .env.example .env
+
+# Start SAS and EMQX.
+docker compose up -d
+
+# View service logs.
+docker compose logs -f sas emqx
+```
+
+On Windows PowerShell, use:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Published ports:
+
+| Service | Address | Purpose |
+|---------|---------|---------|
+| EMQX MQTT | `tcp://<server>:1883` | FMO device connections |
+| EMQX Dashboard | `http://<server>:18083` | Sign in with the Dashboard credentials in `.env` |
+
+The SAS HTTP authentication port is exposed only on the internal Compose network and is not reachable directly from the host. The `sas-data` volume persists SAS configuration and root certificates, while `emqx-data` persists EMQX data. Do not remove these volumes unless you intend to fully reinitialize the deployment.
+
+To update, pull the latest images and let Compose recreate only services that require an update:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+This two-command workflow avoids manually stopping, deleting, and recreating containers, reducing maintenance operations and service recovery time. A single-instance service still has a brief connection interruption while it is recreated.
+
+---
+
 ## EMQX Configuration
 
 Configure HTTP Password Authentication in EMQX Dashboard:
@@ -267,6 +312,14 @@ sas --list-admins [--config <path>]
 - The admin list only stores regular admins (admin role), stored in the `Server.admins` array in `config.json`
 - Use `--config <path>` to specify a non-default config file location
 
+For Docker Compose deployments, manage administrators interactively in the running SAS container:
+
+```bash
+docker exec -it fmo-sas dotnet sas.dll --add-admin
+docker exec -it fmo-sas dotnet sas.dll --remove-admin
+docker exec -it fmo-sas dotnet sas.dll --list-admins
+```
+
 ### Cluster Management
 
 If you have multiple MQTT Brokers sharing a single SAS instance, you can add cluster nodes:
@@ -285,6 +338,22 @@ sas --list-clusters [--config <path>]
 - Cluster node information is stored in the `Mqtt.clusters` array in `config.json`
 - Once added, devices connecting to these Brokers can also authenticate through this SAS
 - The cluster node's UID owner automatically gets the super role on that node
+
+For Docker Compose deployments, register an independent FMO service through the shared SAS configuration volume:
+
+```bash
+# Enter the external FMO service UID, callsign, MQTT host, port, and certificate fingerprint when prompted
+docker exec -it fmo-sas dotnet sas.dll --add-cluster
+
+# List or remove registered external services
+docker exec -it fmo-sas dotnet sas.dll --list-clusters
+docker exec -it fmo-sas dotnet sas.dll --remove-cluster
+
+# Reload the updated configuration in the long-running SAS process
+docker compose restart sas
+```
+
+Set the external service's MQTT Host to a hostname or IP address reachable by devices, not to a service name on this Compose network.
 
 ### Startup Address Display
 

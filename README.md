@@ -68,6 +68,9 @@ FMO Server Authorizer Service 把信任锚点从"网络上的中心服务器"下
 - 集群支持 – 多个 MQTT Broker 共享同一 SAS 实例进行认证
 - OTA 自动更新 – 内置版本检查与自动升级
 - 跨平台 – Windows / Linux / macOS (x64 & ARM64)
+- Docker Compose 部署 – 一次编排 SAS 与 EMQX，并自动配置内部 HTTP 认证回调
+- 持久化运行配置 – `sas-data` 与 `emqx-data` 卷保留配置、证书和 Broker 数据
+- 镜像化更新 – 通过拉取最新 GHCR 镜像并由 Compose 按需重建服务，减少人工操作和业务恢复时间
 
 ## 典型部署场景
 
@@ -169,6 +172,60 @@ curl -X POST http://127.0.0.1:8080/auth \
 
 ---
 
+## Docker Compose 部署
+
+仓库提供 `docker-compose.yml`，一次启动 SAS、EMQX 和 FMO Audit Service (FAS)。三个服务位于同一内部 Docker 网络；EMQX 的 HTTP 认证器已配置为调用 `http://sas:8080/auth`，无需在 Dashboard 中重复创建认证器。
+
+```bash
+# 创建实际部署配置并填写服务器 UID、呼号、证书指纹和 EMQX Dashboard 密码
+cp .env.example .env
+
+# 启动 SAS、EMQX 与 FAS
+docker compose up -d
+
+# 查看服务日志
+docker compose logs -f sas emqx fas
+```
+
+Windows PowerShell 可用：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+对外端口：
+
+| 服务 | 地址 | 用途 |
+|------|------|------|
+| EMQX MQTT | `tcp://<server>:1883` | FMO 设备连接 |
+| EMQX Dashboard | `http://<server>:18083` | 使用 `.env` 中的 Dashboard 账号登录 |
+| FAS Web UI | `http://<server>:9527` | 初始化管理员并配置审计服务 |
+
+SAS 的 HTTP 认证端口仅在 Compose 内部网络开放，不能从宿主机直接访问。`sas-data` 卷持久化 SAS 配置和根证书，`emqx-data` 卷持久化 EMQX 数据；不要删除这些卷，除非需要完全重新初始化。
+
+### FAS 配置
+
+[FMO Audit Service (FAS)](https://github.com/bi9bbl/fmo-audit-service) 已加入此 Compose 网络，但不会接收初始化参数。先在 `http://<server>:18083` 创建 API Key / Secret，再访问 FAS Web UI 完成管理员初始化和 EMQX 连接配置。
+
+FAS 的 EMQX 目标 URL 必须填写：
+
+```text
+http://emqx:18083
+```
+
+`emqx` 是 Compose 服务名，Docker 内部 DNS 会将它解析到 EMQX 容器。不要填写 `http://localhost:18083`，它会指向 FAS 容器自身；也不需要填写宿主机 IP。
+
+更新时先拉取最新镜像，再由 Compose 仅重建需要更新的服务：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+该流程将拉取与重建统一为两条命令，避免手动停止、删除和重新创建容器，可减少维护期间的操作次数和业务恢复时间；单实例服务在自身重建期间仍会有短暂连接中断。
+
+---
+
 ## EMQX 配置
 
 在 EMQX Dashboard 中配置 HTTP 密码认证：
@@ -267,6 +324,14 @@ sas --list-admins [--config <path>]
 - 管理员列表仅存储普通管理员（admin 角色），存储在 `config.json` 的 `Server.admins` 数组中
 - 可通过 `--config <path>` 指定非默认位置的配置文件
 
+Docker Compose 部署使用运行中的 SAS 容器进行交互式管理：
+
+```bash
+docker exec -it fmo-sas dotnet sas.dll --add-admin
+docker exec -it fmo-sas dotnet sas.dll --remove-admin
+docker exec -it fmo-sas dotnet sas.dll --list-admins
+```
+
 ### 集群管理
 
 如果你有多个 MQTT Broker 共用同一个 SAS 实例，可以添加集群节点：
@@ -285,6 +350,22 @@ sas --list-clusters [--config <path>]
 - 集群节点信息存储在 `config.json` 的 `Mqtt.clusters` 数组中
 - 添加后，连接到这些 Broker 的设备也能通过本 SAS 完成认证
 - 集群节点的 UID 所有者在该节点上自动获得 super 角色
+
+使用 Docker Compose 部署时，可将其他独立 FMO 服务的公开 MQTT 地址登记到共享的 SAS 配置卷中：
+
+```bash
+# 按提示输入外部 FMO 服务的 UID、呼号、MQTT 主机、端口和证书指纹
+docker exec -it fmo-sas dotnet sas.dll --add-cluster
+
+# 查看或删除已登记的外部服务
+docker exec -it fmo-sas dotnet sas.dll --list-clusters
+docker exec -it fmo-sas dotnet sas.dll --remove-cluster
+
+# 使常驻 SAS 进程重新加载修改后的配置
+docker compose restart sas
+```
+
+外部服务的 MQTT Host 应填写可从设备访问的域名或 IP 地址，而不是本 Compose 网络中的服务名。
 
 ### 启动地址显示
 

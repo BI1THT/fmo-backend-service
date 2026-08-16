@@ -1,0 +1,61 @@
+services:
+  sas:
+    image: ghcr.io/bg5esn/fmo-server-authrozier-service:latest
+    container_name: fmo-sas
+    restart: unless-stopped
+    command:
+      - --server-uid
+      - ${SAS_SERVER_UID:?Set SAS_SERVER_UID in .env}
+      - --server-callsign
+      - ${SAS_SERVER_CALLSIGN:?Set SAS_SERVER_CALLSIGN in .env}
+      - --mqtt-host
+      - ${SAS_MQTT_HOST:?Set SAS_MQTT_HOST in .env}
+      - --mqtt-port
+      - ${SAS_MQTT_PORT:-1883}
+      - --cert-fingerprint
+      - ${SAS_CERT_FINGERPRINT:?Set SAS_CERT_FINGERPRINT in .env}
+    expose:
+      - "8080"
+    volumes:
+      - sas-data:/home/app/.sas
+    networks:
+      - fmo
+
+  emqx:
+    image: emqx/emqx:5.8.6
+    container_name: fmo-emqx
+    restart: unless-stopped
+    depends_on:
+      - sas
+    environment:
+      EMQX_AUTHENTICATION__1: >-
+        {mechanism = password_based, backend = http, method = post, url = "http://sas:8080/auth", headers = {"Content-Type" = "application/json"}, body = {username = "$${username}", password = "$${password}"}}
+      EMQX_DASHBOARD__DEFAULT_USERNAME: '"${EMQX_DASHBOARD_USERNAME:-admin}"'
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: '"${EMQX_DASHBOARD_PASSWORD:?Set EMQX_DASHBOARD_PASSWORD in .env}"'
+    ports:
+      - "1883:1883"
+      - "18083:18083"
+    volumes:
+      - emqx-data:/opt/emqx/data
+    networks:
+      - fmo
+
+  fas:
+    image: ghcr.io/bg5esn/fmo-audit-service:latest
+    container_name: fmo-audit
+    restart: unless-stopped
+    ports:
+      - "9527:9527"
+    volumes:
+      - fas-data:/data
+    networks:
+      - fmo
+
+volumes:
+  sas-data:
+  emqx-data:
+  fas-data:
+
+networks:
+  fmo:
+    driver: bridge

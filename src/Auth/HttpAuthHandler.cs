@@ -212,7 +212,8 @@ sealed class HttpAuthHandler
         var subTopics = _aclStore.ResolveForUid(subDefs, user.Uid);
 
         const int ttlJitterSec = 60;
-        var exp = now + _config.Http.TtlSec + Random.Shared.NextInt64(-ttlJitterSec, ttlJitterSec + 1);
+        var maxJitter = Math.Min(ttlJitterSec, Math.Max(1, _config.Http.TtlSec / 2));
+        var exp = now + _config.Http.TtlSec + Random.Shared.NextInt64(-maxJitter, maxJitter + 1);
 
         Logger.Info($"HTTP auth: allowed {user.Callsign} uid={user.Uid} role={role}");
 

@@ -6,11 +6,12 @@ using Sas.Logging;
 
 namespace Sas.Trust;
 
-public sealed class CrlManager : IDisposable
+public sealed class CrlManager : ICrlPolicy, IDisposable
 {
     private readonly string _crlDir;
     private readonly int _refreshSec;
     private readonly HttpClient _http;
+    private readonly bool _ownsHttpClient;
 
     private RootCaCert[] _roots = [];
     private readonly ConcurrentDictionary<long, RootCrl> _rootCrls = new();
@@ -21,17 +22,24 @@ public sealed class CrlManager : IDisposable
     private Timer? _timer;
     private int _refreshing;
 
-    public CrlManager(string rootsDir, int refreshSec = 14400)
+    public CrlManager(string rootsDir, int refreshSec = 14400, HttpClient? http = null)
     {
         _refreshSec = refreshSec;
         _crlDir = Path.Combine(Path.GetDirectoryName(rootsDir)!, "crl");
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _ownsHttpClient = http == null;
     }
 
     public void Initialize(RootCaCert[] roots)
     {
         _roots = roots;
         LoadCachedCrls();
+
+        if (_refreshSec <= 0)
+        {
+            Logger.Info($"CRL manager started: {_roots.Length} root(s), background refresh disabled");
+            return;
+        }
 
         _ = RefreshAllAsync().ContinueWith(t =>
             Logger.Warn($"CRL initial refresh error: {t.Exception?.InnerException?.Message}"),
@@ -131,7 +139,8 @@ public sealed class CrlManager : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
-        _http?.Dispose();
+        if (_ownsHttpClient)
+            _http?.Dispose();
     }
 
     private async Task OnTimerTickAsync()

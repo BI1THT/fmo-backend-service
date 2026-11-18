@@ -66,7 +66,7 @@ public static class HttpProofVerifier
         return Math.Abs(nowUtc - timestamp) <= MaxTimestampDriftSec;
     }
 
-    private static byte[] BuildTbs(
+    internal static byte[] BuildTbs(
         long serverUid, string targetCallsign, long targetUID,
         string targetUrl, int targetPort,
         byte[] serverFingerprintBytes,

@@ -25,6 +25,7 @@ public sealed class AuthRateLimiter
     private const long OneMinuteMs = 60_000;
 
     private readonly RateLimitConfig _config;
+    private readonly TimeProvider _time;
     private readonly object _globalLock = new();
     private readonly ConcurrentDictionary<string, BreakerState> _states = new(StringComparer.Ordinal);
 
@@ -40,17 +41,20 @@ public sealed class AuthRateLimiter
         public long LastLog;
     }
 
-    public AuthRateLimiter(RateLimitConfig config)
+    public AuthRateLimiter(RateLimitConfig config, TimeProvider? time = null)
     {
         _config = config;
+        _time = time ?? TimeProvider.System;
     }
+
+    private long NowMs() => _time.GetUtcNow().ToUnixTimeMilliseconds();
 
     public bool TryAcquireGlobal()
     {
         if (!_config.Enabled || _config.GlobalPerMinute <= 0)
             return true;
 
-        var now = Environment.TickCount64;
+        var now = NowMs();
 
         lock (_globalLock)
         {
@@ -86,7 +90,7 @@ public sealed class AuthRateLimiter
         if (!_states.TryGetValue(callsign, out var state))
             return false;
 
-        var now = Environment.TickCount64;
+        var now = NowMs();
 
         lock (state)
         {
@@ -116,7 +120,7 @@ public sealed class AuthRateLimiter
         if (!_config.BreakerEnabled || _config.BreakerFailures <= 0)
             return;
 
-        var now = Environment.TickCount64;
+        var now = NowMs();
         var state = _states.GetOrAdd(callsign, _ => new BreakerState());
 
         lock (state)

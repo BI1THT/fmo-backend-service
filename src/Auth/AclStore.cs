@@ -7,11 +7,8 @@ public sealed class AclStore
 {
     private readonly Dictionary<string, RoleAcl> _roles = new();
 
-    public AclStore(string rootsDir)
+    public AclStore(string rolesDir)
     {
-        var parentDir = Path.GetDirectoryName(rootsDir)!;
-        var rolesDir = Path.Combine(parentDir, "roles");
-
         SeedBuiltinRoles(rolesDir);
         LoadRoles(rolesDir);
 
@@ -21,6 +18,12 @@ public sealed class AclStore
             LoadBuiltinDefaults();
         }
     }
+
+    /// <summary>
+    /// Keeps the legacy layout: roles live next to the roots directory ("&lt;parent&gt;/roles").
+    /// </summary>
+    public static AclStore FromRootsDir(string rootsDir) =>
+        new(Path.Combine(Path.GetDirectoryName(rootsDir)!, "roles"));
 
     public (string[] all, string[] pub, string[] sub) GetPermissions(string role)
     {

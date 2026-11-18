@@ -12,3 +12,6 @@ out/
 test-case/*.log
 test-case/tmp-config/
 *.key
+TestResults/
+coverage.xml
+.tools/

@@ -8,18 +8,20 @@ using Sas.Trust;
 
 namespace Sas.Auth;
 
-sealed class HttpAuthHandler
+internal sealed class HttpAuthHandler : IAuthHandler
 {
     private readonly Config _config;
     private readonly RootCaStore _rootStore;
     private readonly CertVerifier _verifier;
-    private readonly CrlManager _crlManager;
+    private readonly ICrlPolicy _crlManager;
     private readonly AclStore _aclStore;
-    private readonly AuthArchive _archive;
+    private readonly IArchiveSink _archive;
+    private readonly TimeProvider _time;
+    private readonly Random _random;
 
     public HttpAuthHandler(Config config, RootCaStore rootStore,
-        CertVerifier verifier, CrlManager crlManager, AclStore aclStore,
-        AuthArchive archive)
+        CertVerifier verifier, ICrlPolicy crlManager, AclStore aclStore,
+        IArchiveSink archive, TimeProvider? time = null, Random? random = null)
     {
         _config = config;
         _rootStore = rootStore;
@@ -27,6 +29,8 @@ sealed class HttpAuthHandler
         _crlManager = crlManager;
         _aclStore = aclStore;
         _archive = archive;
+        _time = time ?? TimeProvider.System;
+        _random = random ?? Random.Shared;
     }
 
     private sealed record ServerIdentity(long Uid, string Callsign, string MqttHost, int MqttPort, string CertFingerprint);
@@ -103,7 +107,7 @@ sealed class HttpAuthHandler
                 $"server identity mismatch: target={LogSafe.Format(payload.TargetCallsign)}/{payload.TargetUID} {LogSafe.Format(payload.TargetUrl)}:{payload.TargetPort}");
         }
 
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var now = _time.GetUtcNow().ToUnixTimeSeconds();
         Logger.Debug($"HTTP auth: server time (UTC unix)={now}");
 
         if (serverFpText.Length != 43)
@@ -235,7 +239,7 @@ sealed class HttpAuthHandler
 
         const int ttlJitterSec = 60;
         var maxJitter = Math.Min(ttlJitterSec, Math.Max(1, _config.Http.TtlSec / 2));
-        var exp = now + _config.Http.TtlSec + Random.Shared.NextInt64(-maxJitter, maxJitter + 1);
+        var exp = now + _config.Http.TtlSec + _random.NextInt64(-maxJitter, maxJitter + 1);
 
         Logger.Info($"HTTP auth: allow {Scope(ctx)} uid={user.Uid} role={LogSafe.Format(role, 16)} target={LogSafe.Format(server.Callsign)}:{server.MqttPort}");
         _archive.Write(ctx.ToRecord("allow", null, includePayload: true));
@@ -267,7 +271,7 @@ sealed class HttpAuthHandler
             if (sampleRate >= 1.0)
                 includePayload = true;
             else if (sampleRate > 0.0)
-                includePayload = Random.Shared.NextDouble() < sampleRate;
+                includePayload = _random.NextDouble() < sampleRate;
 
             _archive.Write(ctx.ToRecord("deny", safeReason, includePayload));
         }

@@ -14,13 +14,13 @@ sealed class HttpServer
     private readonly int _maxBodyBytes;
     private readonly int _maxPasswordBytes;
     private readonly SemaphoreSlim _concurrencyLimit;
-    private readonly HttpAuthHandler _handler;
+    private readonly IAuthHandler _handler;
     private readonly IResponseTemplate _template;
     private readonly AuthRateLimiter _rateLimiter;
     private HttpListener? _listener;
 
     public HttpServer(string addr, int port, int maxBodyBytes, int maxPasswordBytes, int maxConcurrent,
-        HttpAuthHandler handler, IResponseTemplate template, AuthRateLimiter rateLimiter)
+        IAuthHandler handler, IResponseTemplate template, AuthRateLimiter rateLimiter)
     {
         _addr = addr;
         _port = port;

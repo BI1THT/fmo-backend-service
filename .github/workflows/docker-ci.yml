@@ -16,8 +16,25 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Run tests
+        run: dotnet test tests/Sas.Tests/Sas.Tests.csproj -c Release --filter "Category!=Integration"
+
   build-and-publish:
     name: Build and publish Docker image
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

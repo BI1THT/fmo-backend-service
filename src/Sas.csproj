@@ -10,7 +10,10 @@
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeContentInSingleFile>true</IncludeContentInSingleFile>
     <SelfContained>false</SelfContained>
-    <DebugType>none</DebugType>
+    <!-- Release stays symbol-free for single-file publishing; Debug keeps a
+         portable PDB so coverage tooling can map lines back to source. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugType Condition="'$(Configuration)' != 'Release'">portable</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +31,10 @@
     <Content Include="builtin\roles\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Sas.Tests" />
   </ItemGroup>
 
 </Project>

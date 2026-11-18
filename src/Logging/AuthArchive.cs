@@ -59,7 +59,7 @@ public sealed record AuthArchiveRecord
 /// Writes one JSON line per authentication attempt, grouped by callsign and day.
 /// All disk I/O happens on a single background worker so authentication is never blocked.
 /// </summary>
-public sealed class AuthArchive
+public sealed class AuthArchive : IArchiveSink
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -68,6 +68,7 @@ public sealed class AuthArchive
     };
 
     private readonly ArchiveConfig _config;
+    private readonly TimeProvider _time;
     private readonly Channel<AuthArchiveRecord> _channel;
     private readonly Task? _worker;
     private const int MaxOpenWriters = 64;
@@ -84,9 +85,10 @@ public sealed class AuthArchive
         public required long Bytes { get; set; }
     }
 
-    public AuthArchive(ArchiveConfig config)
+    public AuthArchive(ArchiveConfig config, TimeProvider? time = null)
     {
         _config = config;
+        _time = time ?? TimeProvider.System;
         _channel = Channel.CreateBounded<AuthArchiveRecord>(new BoundedChannelOptions(4096)
         {
             SingleReader = true,
@@ -130,7 +132,7 @@ public sealed class AuthArchive
     private async Task ConsumeAsync()
     {
         Cleanup();
-        _lastCleanupDate = DateTime.Today;
+        _lastCleanupDate = _time.GetLocalNow().Date;
 
         await foreach (var record in _channel.Reader.ReadAllAsync())
         {
@@ -150,7 +152,7 @@ public sealed class AuthArchive
 
     private void WriteRecord(AuthArchiveRecord record)
     {
-        var today = DateTime.Today;
+        var today = _time.GetLocalNow().Date;
         if (_lastCleanupDate != today)
         {
             _lastCleanupDate = today;
@@ -272,7 +274,7 @@ public sealed class AuthArchive
         if (_config.RetentionDays <= 0 || !Directory.Exists(_config.Dir))
             return;
 
-        var cutoff = DateTime.Today.AddDays(-_config.RetentionDays);
+        var cutoff = _time.GetLocalNow().Date.AddDays(-_config.RetentionDays);
 
         foreach (var callsignDir in Directory.GetDirectories(_config.Dir))
         {
@@ -315,7 +317,7 @@ public sealed class AuthArchive
         _writers.Clear();
     }
 
-    private static string SanitizeCallsign(string callsign)
+    internal static string SanitizeCallsign(string callsign)
     {
         var upper = (callsign ?? "").Trim().ToUpperInvariant();
         var sb = new StringBuilder(upper.Length);

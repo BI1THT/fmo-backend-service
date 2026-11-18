@@ -219,6 +219,8 @@ internal static class ConfigParser
             missing.Add("  mqtt.host              (required) MQTT broker hostname");
         if (string.IsNullOrWhiteSpace(cfg.Server.CertFingerprint))
             missing.Add("  server.certFingerprint (required) Server UserCert fingerprint");
+        else if (!IsValidFingerprint(cfg.Server.CertFingerprint))
+            missing.Add("  server.certFingerprint (invalid) expected 43-character base64url of a 32-byte SHA-256");
 
         if (cfg.Http.Port <= 0)
             missing.Add("  http.port              (required) HTTP listen port");
@@ -228,5 +230,17 @@ internal static class ConfigParser
             missing.Add("  http.maxConcurrent     (required) must be > 0, e.g. 128");
 
         return missing;
+    }
+
+    internal static bool IsValidFingerprint(string value)
+    {
+        try
+        {
+            return Sas.certs.Base64Url.Decode(value).Length == 32;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

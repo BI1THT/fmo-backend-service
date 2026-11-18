@@ -122,6 +122,12 @@ if (!isAutoAdmin)
     Logger.Info($"  Admins: {adminsCount} {adminsList}");
 }
 
+if (adminsCount == 0)
+{
+    Logger.Warn("  No admins configured: super is granted only to the certificate whose " +
+                "fingerprint equals server.certFingerprint");
+}
+
 Logger.Info($"  Version: {version}");
 Logger.Info($"  Archive: {(config.Archive.Enabled ? config.Archive.Dir : "(disabled)")}");
 Logger.Info($"  Rate limit: global={config.Http.RateLimit.GlobalPerMinute}/min breaker={(config.Http.RateLimit.BreakerEnabled ? "on" : "off")}");

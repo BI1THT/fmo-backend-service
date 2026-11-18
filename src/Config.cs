@@ -946,6 +946,7 @@ internal sealed class Config
             Logger.Error($"请编辑 {ConfigPath} 补充以下字段，或运行 / Fix: edit config file, or run");
             Logger.Error("  sas（无参数）启动交互式配置向导。 / sas without arguments to start setup wizard.");
             Logger.Error("  帮助：sas --help / Help: sas --help");
+            Logger.Flush();
             Environment.Exit(1);
         }
     }

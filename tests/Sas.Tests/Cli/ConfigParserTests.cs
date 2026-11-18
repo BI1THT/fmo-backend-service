@@ -468,6 +468,45 @@ public class ConfigParserTests
         Assert.Empty(ConfigParser.FindMissing(config));
     }
 
+    [Theory]
+    [InlineData("!!!")]                                           // not base64url
+    [InlineData("abc")]                                           // decodes to 2 bytes
+    [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]    // 42 chars -> 31 bytes
+    [InlineData("***************************************************")]
+    public void FindMissing_MalformedFingerprint_IsReported(string fingerprint)
+    {
+        var config = CreateFullyEmptyConfig();
+        config.Server.Uid = 5001;
+        config.Server.Callsign = "BG5ESN";
+        config.Server.CertFingerprint = fingerprint;
+        config.Mqtt.Host = "mqtt.example.test";
+        config.Http.Port = 8080;
+        config.Http.MaxBodyBytes = 65536;
+        config.Http.MaxConcurrent = 128;
+
+        var missing = ConfigParser.FindMissing(config);
+
+        var entry = Assert.Single(missing);
+        Assert.Contains("server.certFingerprint", entry);
+        Assert.Contains("invalid", entry);
+    }
+
+    [Fact]
+    public void FindMissing_WellFormedFingerprint_IsAccepted()
+    {
+        var config = CreateFullyEmptyConfig();
+        config.Server.Uid = 5001;
+        config.Server.Callsign = "BG5ESN";
+        config.Server.CertFingerprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        config.Mqtt.Host = "mqtt.example.test";
+        config.Http.Port = 8080;
+        config.Http.MaxBodyBytes = 65536;
+        config.Http.MaxConcurrent = 128;
+
+        Assert.Empty(ConfigParser.FindMissing(config));
+        Assert.True(ConfigParser.IsValidFingerprint(config.Server.CertFingerprint));
+    }
+
     // ──────────────────────────────────────────────────────────────
     // IsRunningInDocker
     // ──────────────────────────────────────────────────────────────

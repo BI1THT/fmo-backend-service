@@ -258,7 +258,16 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
     "ttlSec": 14400,
     "responseTemplate": "emqx",
     "maxBodyBytes": 65536,
-    "maxConcurrent": 128
+    "maxPasswordBytes": 32768,
+    "maxConcurrent": 128,
+    "rateLimit": {
+      "enabled": true,
+      "globalPerMinute": 600,
+      "breakerEnabled": true,
+      "breakerFailures": 20,
+      "breakerWindowSec": 300,
+      "breakerBanSec": 600
+    }
   },
   "update": { "enabled": true },
   "log": { "level": "Info" },
@@ -266,8 +275,11 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
     "enabled": true,
     "dir": "/data/sas/archive",
     "recordDenied": true,
+    "recordDeniedPayload": false,
+    "deniedPayloadSampleRate": 0.0,
     "retentionDays": 30,
-    "maxFileBytes": 16777216
+    "maxFileBytes": 16777216,
+    "maxRecordBytes": 16384
   }
 }
 ```
@@ -305,14 +317,22 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 
 ### Login Audit & Archive
 
-Every HTTP authentication produces a structured log line and stores the complete signed payload in an archive file.
+Every HTTP authentication produces a structured log line. Successful logins store the complete signed payload; failed logins store a summary by default to keep high-frequency failures from filling the disk.
 
 The log shows which Root CA and Intermediate CA issued the user certificate, plus a request ID that links the line to its archive record:
 
 ```text
-[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=a1b2c3d4e5f6 client=192.168.1.20
-[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=0f9e8d7c6b5a client=192.168.1.21 reason="timestamp expired"
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
 ```
+
+Entry-point protections:
+
+- `username` is limited to 32 UTF-8 bytes and only `A-Z 0-9 / -`; invalid requests are denied before any parsing or archiving.
+- Global rate limit defaults to 600 requests/minute.
+- A callsign with 20 failures within 5 minutes is temporarily blocked for 10 minutes. Only failures after the certificate chain has been verified count, so an attacker cannot lock out a victim by spoofing their callsign.
+- `http.maxPasswordBytes` rejects oversized password fields.
+- Untrusted values are escaped before being written to the plain-text log.
 
 Records are grouped by callsign and day, one JSON object per line:
 
@@ -329,7 +349,6 @@ Records are grouped by callsign and day, one JSON object per line:
   "v": 1,
   "ts": "2026-11-18T20:34:56.789+08:00",
   "requestId": "a1b2c3d4e5f6",
-  "clientIp": "192.168.1.20",
   "callsign": "BG6VMZ",
   "result": "allow",
   "reason": null,
@@ -354,11 +373,12 @@ Records are grouped by callsign and day, one JSON object per line:
 }
 ```
 
-- `password` is the original base64url string and `payload` is the decoded JSON, so any attempt can be re-verified or inspected.
-- Both successes and failures (`result` = `allow` / `deny`) are archived; malformed requests that cannot be decoded are only logged.
+- Successful logins store the full `password` and `payload`.
+- Failed logins store a summary by default: `password` and `payload` are `null`, while lengths, `passwordSha256`, `payloadSha256`, failure reason, and certificate chain details are kept. Set `archive.recordDeniedPayload=true` or use `archive.deniedPayloadSampleRate` to keep full failed payloads.
+- Malformed requests that cannot be decoded are only logged, not archived.
+- SAS does not record the source IP. To locate a device's real IP, use the EMQX client list or connection logs.
 - On Linux the archive directory is created as `0700` and files as `0600`. Payloads contain no private keys, but do contain the full certificate chain and signatures — do not share them publicly.
-- `archive.retentionDays` controls retention; `archive.maxFileBytes` caps each file (overflow goes to `.1`, `.2`, ...).
-- `clientIp` prefers the `X-Client-IP` / `X-Real-IP` / `X-Forwarded-For` header forwarded by EMQX. The bundled `docker-compose.yml` sets `X-Client-IP = ${peerhost}`; add this header when configuring EMQX manually to capture the real device IP.
+- `archive.retentionDays` controls retention; `archive.maxFileBytes` caps each file (overflow goes to `.1`, `.2`, ...); `archive.maxRecordBytes` caps each record and falls back to a summary when exceeded.
 - In Docker the archive lives in the `sas-data` volume. Set `TZ` if you want files split by local date (Compose defaults to `Asia/Shanghai`).
 
 Inspect recent records:
@@ -480,7 +500,9 @@ fmo-server-authorizer-service/
 ├── src/                            ← Source code
 │   ├── Sas.csproj                  ← Project file (.NET 10.0)
 │   ├── Program.cs                  ← Entry: CLI parsing + interactive config + startup
-│   ├── Server/HttpServer.cs        ← HTTP listener + /auth endpoint
+│   ├── Server/                     ← HTTP listener and rate limiting
+│   │   ├── HttpServer.cs           ← /auth endpoint
+│   │   └── AuthRateLimiter.cs      ← Global rate limit + callsign breaker
 │   ├── Messages/                   ← HTTP auth payload DTOs
 │   ├── Trust/                      ← Certificate verification + CRL management
 │   │   ├── RootCaStore.cs          ← Root CA loading
@@ -489,12 +511,14 @@ fmo-server-authorizer-service/
 │   ├── Auth/                       ← Auth processing + ACL
 │   │   ├── HttpAuthHandler.cs      ← Core auth logic
 │   │   ├── AuthRequestContext.cs   ← Request context (request ID / archive fields)
+│   │   ├── CallsignValidator.cs    ← Callsign format and length validation
 │   │   ├── HttpProofVerifier.cs    ← Ed25519 signature verification
 │   │   ├── AclStore.cs             ← Role permissions (super/admin/user)
 │   │   └── EmqxResponseTemplate.cs ← EMQX response format
 │   ├── certs/                      ← Cert data structures + Ed25519 + Base64Url
 │   ├── Logging/                    ← Logging and login archive
 │   │   ├── Logger.cs               ← Console logging
+│   │   ├── LogSafe.cs              ← Log field escaping
 │   │   └── AuthArchive.cs          ← Per-callsign login payload archive
 │   └── builtin/                    ← Built-in data
 │       ├── roots/bg5esn.json       ← Built-in Root CA
@@ -553,7 +577,8 @@ fmo-server-authorizer-service/
 3. **Source of Truth**: After initial setup, modify configuration by editing `config.json` (restart to apply), or re-launch with CLI arguments to auto-update the config.
 4. **Upgrades**: `sas --update` automatically downloads the latest version and restarts (disable: `update.enabled = false`).
 5. **Device Side**: FMO device firmware must use SAS HTTP authenticator mode (carrying certificate info in username/password during MQTT CONNECT).
-6. **Login Archive**: Archive files contain the full certificate chain and proof signatures (no private keys) and are intended for auditing and troubleshooting. Restrict access to the archive directory and tune `archive.retentionDays` / `archive.maxFileBytes` as needed.
+6. **Login Archive**: Successful logins store full payloads; failed logins store summaries by default. Archive files contain the certificate chain and proof signatures (no private keys) and are intended for auditing and troubleshooting. Restrict access to the archive directory and tune `archive.retentionDays`, `archive.maxFileBytes`, and `archive.maxRecordBytes` as needed.
+7. **Entry Protection**: `username` is limited to 32 UTF-8 bytes and callsign characters only. The default global rate limit is 600 requests/minute. A callsign breaker only counts failures after certificate chain verification, so early spoofed failures cannot lock out legitimate users. Tune these in `http.rateLimit`.
 
 ---
 

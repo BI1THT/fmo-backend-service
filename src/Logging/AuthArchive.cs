@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Sas.Auth;
 
 namespace Sas.Logging;
 
@@ -15,17 +16,22 @@ public sealed class ArchiveConfig
 
     public bool RecordDenied { get; set; } = true;
 
+    public bool RecordDeniedPayload { get; set; } = false;
+
+    public double DeniedPayloadSampleRate { get; set; } = 0.0;
+
     public int RetentionDays { get; set; } = 30;
 
     public long MaxFileBytes { get; set; } = 16 * 1024 * 1024;
+
+    public int MaxRecordBytes { get; set; } = 16 * 1024;
 }
 
-public sealed class AuthArchiveRecord
+public sealed record AuthArchiveRecord
 {
     public int V { get; init; } = 1;
     public string Ts { get; init; } = "";
     public string RequestId { get; init; } = "";
-    public string? ClientIp { get; init; }
     public string Callsign { get; init; } = "";
     public string Result { get; init; } = "";
     public string? Reason { get; init; }
@@ -69,6 +75,7 @@ public sealed class AuthArchive
     private readonly Dictionary<string, WriterState> _writers = new(StringComparer.Ordinal);
     private int _dropLogged;
     private int _errorLogged;
+    private int _truncateLogged;
     private DateTime _lastCleanupDate = DateTime.MinValue;
 
     private sealed class WriterState
@@ -167,6 +174,17 @@ public sealed class AuthArchive
         }
 
         var line = JsonSerializer.Serialize(record, JsonOptions);
+
+        if (_config.MaxRecordBytes > 0 &&
+            Encoding.UTF8.GetByteCount(line) > _config.MaxRecordBytes)
+        {
+            var summary = record with { Password = null, Payload = null };
+            line = JsonSerializer.Serialize(summary, JsonOptions);
+
+            if (Interlocked.Exchange(ref _truncateLogged, 1) == 0)
+                Logger.Warn($"Auth archive: record exceeded {_config.MaxRecordBytes} bytes, storing summary only");
+        }
+
         var bytes = Encoding.UTF8.GetByteCount(line) + 1;
 
         if (_config.MaxFileBytes > 0 &&
@@ -310,9 +328,14 @@ public sealed class AuthArchive
                 sb.Append('_');
         }
 
-        if (sb.Length == 0)
-            return "_UNKNOWN";
+        var name = sb.Length == 0 ? "_UNKNOWN" : sb.ToString();
+        if (name.Length > CallsignValidator.MaxBytes)
+            name = name[..CallsignValidator.MaxBytes];
 
-        return sb.Length <= 16 ? sb.ToString() : sb.ToString(0, 16);
+        // Avoid Windows reserved device names such as CON, NUL, COM1.
+        if (CallsignValidator.IsReservedWindowsName(name))
+            name = "_" + name;
+
+        return name;
     }
 }

@@ -270,7 +270,16 @@ Body: { "username": "${username}", "password": "${password}" }
     "ttlSec": 14400,
     "responseTemplate": "emqx",
     "maxBodyBytes": 65536,
-    "maxConcurrent": 128
+    "maxPasswordBytes": 32768,
+    "maxConcurrent": 128,
+    "rateLimit": {
+      "enabled": true,
+      "globalPerMinute": 600,
+      "breakerEnabled": true,
+      "breakerFailures": 20,
+      "breakerWindowSec": 300,
+      "breakerBanSec": 600
+    }
   },
   "update": { "enabled": true },
   "log": { "level": "Info" },
@@ -278,8 +287,11 @@ Body: { "username": "${username}", "password": "${password}" }
     "enabled": true,
     "dir": "/data/sas/archive",
     "recordDenied": true,
+    "recordDeniedPayload": false,
+    "deniedPayloadSampleRate": 0.0,
     "retentionDays": 30,
-    "maxFileBytes": 16777216
+    "maxFileBytes": 16777216,
+    "maxRecordBytes": 16384
   }
 }
 ```
@@ -317,14 +329,22 @@ Body: { "username": "${username}", "password": "${password}" }
 
 ### 登录审计与归档
 
-每次 HTTP 认证都会生成一条结构化日志，并把完整的数字签名报文写入归档文件。
+每次 HTTP 认证都会生成一条结构化日志。成功登录会把完整的数字签名报文写入归档文件；失败登录默认只写摘要，避免高频失败撑大磁盘。
 
 日志中可以看到用户证书链所属的 Root CA 和 Intermediate CA，以及用于关联归档记录的请求 ID：
 
 ```text
-[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=a1b2c3d4e5f6 client=192.168.1.20
-[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=0f9e8d7c6b5a client=192.168.1.21 reason="timestamp expired"
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
 ```
+
+认证入口的安全限制：
+
+- `username` 最长 32 个 UTF-8 字节，只允许 `A-Z 0-9 / -`，非法请求直接拒绝且不归档；
+- 默认全局限流 600 次/分钟；
+- 同一呼号在证书链校验通过后，5 分钟内失败 20 次会临时封禁 10 分钟；无法证明持有该呼号证书的早期失败只受全局限流约束，避免伪造呼号误伤正常用户；
+- `http.maxPasswordBytes` 限制 password 长度，超长直接拒绝；
+- 外部字段写入日志前统一转义，避免换行/控制字符注入。
 
 归档按呼号和日期分组，每行是一个独立 JSON 对象：
 
@@ -341,7 +361,6 @@ Body: { "username": "${username}", "password": "${password}" }
   "v": 1,
   "ts": "2026-11-18T20:34:56.789+08:00",
   "requestId": "a1b2c3d4e5f6",
-  "clientIp": "192.168.1.20",
   "callsign": "BG6VMZ",
   "result": "allow",
   "reason": null,
@@ -366,11 +385,12 @@ Body: { "username": "${username}", "password": "${password}" }
 }
 ```
 
-- `password` 是 base64url 原文，`payload` 是解码后的完整 JSON，可直接用于复现验签或排查。
-- 成功和失败（`result` 为 `allow` / `deny`）都会归档；无法解析的畸形请求只写日志。
+- 成功登录会保存完整的 `password` 和 `payload`，可直接用于复现验签或排查。
+- 失败登录默认只保存摘要：`password` 和 `payload` 为 `null`，但保留长度、`passwordSha256`、`payloadSha256`、失败原因和证书链信息。需要完整失败报文时设置 `archive.recordDeniedPayload=true`，或用 `archive.deniedPayloadSampleRate` 按比例采样。
+- 无法解析的畸形请求只写日志，不归档。
+- SAS 不记录来源 IP。需要定位设备真实 IP 时，请在 EMQX 的客户端列表或连接日志中查询。
 - 归档目录在 Linux 上创建为 `0700`，文件为 `0600`。报文不包含私钥，但包含完整证书链和签名，请勿公开分享。
-- `archive.retentionDays` 为保留天数，`archive.maxFileBytes` 为单文件大小上限（超出后追加 `.1`、`.2` 后缀）。
-- `clientIp` 优先读取 EMQX 透传的 `X-Client-IP` / `X-Real-IP` / `X-Forwarded-For`。仓库的 `docker-compose.yml` 已配置 `X-Client-IP = ${peerhost}`；手动配置 EMQX 时可加上该 Header 以获得真实设备 IP。
+- `archive.retentionDays` 为保留天数，`archive.maxFileBytes` 为单文件大小上限（超出后追加 `.1`、`.2` 后缀），`archive.maxRecordBytes` 为单条记录上限（超出时自动降级为摘要）。
 - Docker 中归档位于 `sas-data` 卷内；如需按本地日期切分文件，请设置 `TZ`（Compose 默认 `Asia/Shanghai`）。
 
 查看最近的登录记录：
@@ -492,7 +512,9 @@ fmo-server-authorizer-service/
 ├── src/                            ← 源代码
 │   ├── Sas.csproj                  ← 项目文件 (.NET 10.0)
 │   ├── Program.cs                  ← 入口：CLI 解析 + 交互配置 + 启动
-│   ├── Server/HttpServer.cs        ← HTTP 监听器 + /auth 端点
+│   ├── Server/                     ← HTTP 监听器与限流
+│   │   ├── HttpServer.cs           ← /auth 端点
+│   │   └── AuthRateLimiter.cs      ← 全局限流 + 呼号熔断
 │   ├── Messages/                   ← HTTP 认证载荷 DTO
 │   ├── Trust/                      ← 证书验证 + CRL 管理
 │   │   ├── RootCaStore.cs          ← Root CA 加载
@@ -501,12 +523,14 @@ fmo-server-authorizer-service/
 │   ├── Auth/                       ← 认证处理 + ACL
 │   │   ├── HttpAuthHandler.cs      ← 认证核心逻辑
 │   │   ├── AuthRequestContext.cs   ← 请求上下文（request ID / 归档字段）
+│   │   ├── CallsignValidator.cs    ← 呼号格式与长度校验
 │   │   ├── HttpProofVerifier.cs    ← Ed25519 签名验证
 │   │   ├── AclStore.cs             ← 角色权限 (super/admin/user)
 │   │   └── EmqxResponseTemplate.cs ← EMQX 响应格式
 │   ├── certs/                      ← 证书数据结构 + Ed25519 + Base64Url
 │   ├── Logging/                    ← 日志与登录归档
 │   │   ├── Logger.cs               ← 控制台日志
+│   │   ├── LogSafe.cs              ← 日志字段转义
 │   │   └── AuthArchive.cs          ← 按呼号归档登录报文
 │   └── builtin/                    ← 内置数据
 │       ├── roots/bg5esn.json       ← 内置 Root CA
@@ -565,7 +589,8 @@ fmo-server-authorizer-service/
 3. **真相源**：首次初始化后，可通过编辑 `config.json` 修改配置（重启生效），也可通过 CLI 参数重新启动来自动更新配置。
 4. **升级**：`sas --update` 自动下载最新版本并重启（或关闭自动检查：`update.enabled = false`）。
 5. **设备侧**：FMO 设备固件需使用 SAS HTTP 认证器模式（MQTT CONNECT 时 username/password 携带证书信息）。
-6. **登录归档**：归档文件包含完整证书链和 proof 签名（不含私钥），仅用于审计和故障排查。请限制归档目录访问权限，并按需调整 `archive.retentionDays` 与 `archive.maxFileBytes`。
+6. **登录归档**：成功登录保存完整报文，失败登录默认只保存摘要。归档文件包含完整证书链和 proof 签名（不含私钥），仅用于审计和故障排查。请限制归档目录访问权限，并按需调整 `archive.retentionDays`、`archive.maxFileBytes` 与 `archive.maxRecordBytes`。
+7. **入口防护**：`username` 最长 32 个 UTF-8 字节且只允许呼号字符；全局限流默认 600 次/分钟。同一呼号只有在证书链校验通过后连续失败才会临时熔断，早期失败不会因伪造呼号误伤他人。阈值可在 `http.rateLimit` 中调整。
 
 ---
 

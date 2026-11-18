@@ -122,12 +122,14 @@ if (!isAutoAdmin)
 
 Logger.Info($"  Version: {version}");
 Logger.Info($"  Archive: {(config.Archive.Enabled ? config.Archive.Dir : "(disabled)")}");
+Logger.Info($"  Rate limit: global={config.Http.RateLimit.GlobalPerMinute}/min breaker={(config.Http.RateLimit.BreakerEnabled ? "on" : "off")}");
 
 var rootStore = new RootCaStore(config.Trust.RootsDir);
 var verifier = new CertVerifier();
 var crlManager = new CrlManager(config.Trust.RootsDir, config.Crl.RefreshSec);
 var aclStore = new AclStore(config.Trust.RootsDir);
 var archive = new AuthArchive(config.Archive);
+var rateLimiter = new AuthRateLimiter(config.Http.RateLimit);
 
 Logger.Info("SAS HTTP auth listening on:");
 if (config.Http.Addr == "0.0.0.0" || config.Http.Addr == "+")
@@ -151,7 +153,8 @@ crlManager.Initialize(rootStore.AllRoots.ToArray());
 
 var httpHandler = new HttpAuthHandler(config, rootStore, verifier, crlManager, aclStore, archive);
 var template = CreateResponseTemplate(config.Http.ResponseTemplate);
-var httpServer = new HttpServer(config.Http.Addr, config.Http.Port, config.Http.MaxBodyBytes, config.Http.MaxConcurrent, httpHandler, template);
+var httpServer = new HttpServer(config.Http.Addr, config.Http.Port, config.Http.MaxBodyBytes,
+    config.Http.MaxPasswordBytes, config.Http.MaxConcurrent, httpHandler, template, rateLimiter);
 httpServer.Start();
 
 if (config.Update.Enabled)
@@ -500,7 +503,9 @@ sealed class Config
         public int TtlSec { get; set; } = 14400;
         public string ResponseTemplate { get; set; } = "emqx";
         public int MaxBodyBytes { get; set; } = 65536;
+        public int MaxPasswordBytes { get; set; } = 32768;
         public int MaxConcurrent { get; set; } = 128;
+        public RateLimitConfig RateLimit { get; set; } = new();
     }
 
     public sealed class UpdateConfig
@@ -943,6 +948,7 @@ sealed class Config
             Fail($"配置文件解析失败：{ConfigPath} / Failed to parse config.");
 
         config!.Http ??= new();
+        config!.Http.RateLimit ??= new();
         config!.Server ??= new();
         config!.Mqtt ??= new();
         config!.Trust ??= new();
@@ -996,6 +1002,7 @@ sealed class Config
             Fail("配置文件解析失败。 / Failed to parse config.json.");
 
         config!.Http ??= new();
+        config!.Http.RateLimit ??= new();
         config!.Server ??= new();
         config!.Mqtt ??= new();
         config!.Trust ??= new();

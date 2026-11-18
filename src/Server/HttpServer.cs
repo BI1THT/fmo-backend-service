@@ -12,20 +12,24 @@ sealed class HttpServer
     private readonly string _addr;
     private readonly int _port;
     private readonly int _maxBodyBytes;
+    private readonly int _maxPasswordBytes;
     private readonly SemaphoreSlim _concurrencyLimit;
     private readonly HttpAuthHandler _handler;
     private readonly IResponseTemplate _template;
+    private readonly AuthRateLimiter _rateLimiter;
     private HttpListener? _listener;
 
-    public HttpServer(string addr, int port, int maxBodyBytes, int maxConcurrent,
-        HttpAuthHandler handler, IResponseTemplate template)
+    public HttpServer(string addr, int port, int maxBodyBytes, int maxPasswordBytes, int maxConcurrent,
+        HttpAuthHandler handler, IResponseTemplate template, AuthRateLimiter rateLimiter)
     {
         _addr = addr;
         _port = port;
         _maxBodyBytes = maxBodyBytes;
+        _maxPasswordBytes = maxPasswordBytes;
         _concurrencyLimit = new SemaphoreSlim(maxConcurrent);
         _handler = handler;
         _template = template;
+        _rateLimiter = rateLimiter;
     }
 
     public void Start()
@@ -93,12 +97,17 @@ sealed class HttpServer
     private async Task HandleRequestCoreAsync(HttpListenerContext ctx)
     {
         var requestId = Guid.NewGuid().ToString("N")[..12];
-        var clientIp = GetClientIp(ctx.Request);
 
         try
         {
             if (ctx.Request.HttpMethod != "POST" ||
                 !ctx.Request.Url!.AbsolutePath.TrimEnd('/').EndsWith("/auth", StringComparison.OrdinalIgnoreCase))
+            {
+                await WriteDenyResponse(ctx.Response);
+                return;
+            }
+
+            if (!_rateLimiter.TryAcquireGlobal())
             {
                 await WriteDenyResponse(ctx.Response);
                 return;
@@ -115,23 +124,47 @@ sealed class HttpServer
             JsonElement json;
             try
             {
-                json = JsonDocument.Parse(body).RootElement;
+                using var doc = JsonDocument.Parse(body);
+                json = doc.RootElement.Clone();
             }
             catch
             {
-                Logger.Warn($"HTTP auth: malformed request body req={requestId} client={clientIp ?? "-"} reason=\"invalid json\"");
+                Logger.Warn($"HTTP auth: malformed request body req={requestId} reason=\"invalid json\"");
                 await WriteDenyResponse(ctx.Response);
                 return;
             }
 
-            var username = json.TryGetProperty("username", out var un) ? un.GetString() ?? "" : "";
-            var password = json.TryGetProperty("password", out var pw) ? pw.GetString() ?? "" : "";
+            var username = ReadString(json, "username");
+            var password = ReadString(json, "password");
 
-            Logger.Debug($"HTTP auth: received request username={username} password.length={password.Length} req={requestId} client={clientIp ?? "-"}");
+            var usernameBytes = Encoding.UTF8.GetByteCount(username);
+            var passwordBytes = Encoding.UTF8.GetByteCount(password);
+
+            Logger.Debug($"HTTP auth: received request usernameBytes={usernameBytes} passwordBytes={passwordBytes} req={requestId}");
 
             if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             {
-                Logger.Warn($"HTTP auth: malformed request req={requestId} client={clientIp ?? "-"} reason=\"empty username or password\"");
+                Logger.Warn($"HTTP auth: malformed request req={requestId} reason=\"empty username or password\"");
+                await WriteDenyResponse(ctx.Response);
+                return;
+            }
+
+            if (!CallsignValidator.TryNormalize(username, out var normalizedUsername, out var callsignError))
+            {
+                Logger.Warn($"HTTP auth: reject callsign req={requestId} usernameBytes={usernameBytes} reason=\"{callsignError}\"");
+                await WriteDenyResponse(ctx.Response);
+                return;
+            }
+
+            if (_maxPasswordBytes > 0 && passwordBytes > _maxPasswordBytes)
+            {
+                Logger.Warn($"HTTP auth: reject password req={requestId} callsign={LogSafe.Format(normalizedUsername, CallsignValidator.MaxBytes)} passwordBytes={passwordBytes} reason=\"password too long\"");
+                await WriteDenyResponse(ctx.Response);
+                return;
+            }
+
+            if (_rateLimiter.IsBanned(normalizedUsername, requestId, out _))
+            {
                 await WriteDenyResponse(ctx.Response);
                 return;
             }
@@ -139,16 +172,20 @@ sealed class HttpServer
             object responseBody;
             try
             {
-                var result = _handler.Process(username, password, requestId, clientIp);
+                var result = _handler.Process(normalizedUsername, password, requestId);
+                _rateLimiter.RecordSuccess(normalizedUsername);
                 responseBody = _template.BuildAllow(result);
             }
-            catch (AuthDeniedException)
+            catch (AuthDeniedException ex)
             {
+                if (ex.BreakerKey is { } breakerKey)
+                    _rateLimiter.RecordFailure(breakerKey, requestId);
+
                 responseBody = _template.BuildDeny();
             }
             catch (Exception ex)
             {
-                Logger.Error($"HTTP auth: internal error req={requestId} client={clientIp ?? "-"}: {ex}");
+                Logger.Error($"HTTP auth: internal error req={requestId}: {ex}");
                 responseBody = _template.BuildDeny();
             }
 
@@ -196,16 +233,11 @@ sealed class HttpServer
         return Encoding.UTF8.GetString(buffer, 0, totalRead);
     }
 
-    private static string? GetClientIp(HttpListenerRequest request)
+    private static string ReadString(JsonElement json, string name)
     {
-        foreach (var name in new[] { "X-Client-IP", "X-Real-IP", "X-Forwarded-For" })
-        {
-            var value = request.Headers[name];
-            if (!string.IsNullOrWhiteSpace(value))
-                return value.Split(',')[0].Trim();
-        }
-
-        return request.RemoteEndPoint?.Address.ToString();
+        return json.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString() ?? ""
+            : "";
     }
 
     private static async Task WriteDenyResponse(HttpListenerResponse response)

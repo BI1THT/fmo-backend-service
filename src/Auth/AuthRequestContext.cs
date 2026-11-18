@@ -12,18 +12,16 @@ namespace Sas.Auth;
 /// </summary>
 public sealed class AuthRequestContext
 {
-    public AuthRequestContext(string username, string password, string requestId, string? clientIp)
+    public AuthRequestContext(string username, string password, string requestId)
     {
         Username = username;
         Callsign = username;
         PasswordRaw = password;
         RequestId = requestId;
-        ClientIp = clientIp;
         PasswordHash = Hash(password);
     }
 
     public string RequestId { get; }
-    public string? ClientIp { get; }
     public string Username { get; }
     public string Callsign { get; set; }
     public string PasswordRaw { get; }
@@ -41,6 +39,7 @@ public sealed class AuthRequestContext
     public string? IssuerName { get; set; }
     public long? UserUid { get; set; }
     public string? Role { get; set; }
+    public string? BreakerKey { get; set; }
     public string? ClaimedRole { get; set; }
     public string? TargetCallsign { get; set; }
     public long? TargetUid { get; set; }
@@ -55,13 +54,12 @@ public sealed class AuthRequestContext
         PayloadHash = Hash(json);
     }
 
-    public AuthArchiveRecord ToRecord(string result, string? reason)
+    public AuthArchiveRecord ToRecord(string result, string? reason, bool includePayload)
     {
         return new AuthArchiveRecord
         {
             Ts = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz", CultureInfo.InvariantCulture),
             RequestId = RequestId,
-            ClientIp = ClientIp,
             Callsign = Callsign,
             Result = result,
             Reason = reason,
@@ -81,8 +79,8 @@ public sealed class AuthRequestContext
             PasswordSha256 = PasswordHash,
             PayloadLength = PayloadLength,
             PayloadSha256 = PayloadHash,
-            Password = PasswordRaw,
-            Payload = Payload
+            Password = includePayload ? PasswordRaw : null,
+            Payload = includePayload ? Payload : null
         };
     }
 

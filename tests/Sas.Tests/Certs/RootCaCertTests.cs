@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Sas.Tests.Fixtures;
 
 namespace Sas.Tests.Certs;
@@ -12,6 +13,9 @@ public sealed class RootCaCertTests
     private static Sas.certs.RootCaCert LoadBuiltin() =>
         Sas.certs.RootCaCert.FromJson(
             JsonDocument.Parse(File.ReadAllText(BuiltinRootPath)).RootElement);
+
+    private static Sas.certs.RootCaCert Parse(string json) =>
+        Sas.certs.RootCaCert.FromJson(JsonDocument.Parse(json).RootElement);
 
     [Fact]
     public void BuiltinRoot_IsShippedWithTheTestOutput()
@@ -52,6 +56,33 @@ public sealed class RootCaCertTests
         var hash = Convert.ToHexString(SHA256.HashData(tbs)).ToLowerInvariant();
 
         Assert.Equal("1d1bf0f07bbd5e985cd3c0aea2db28f45cc3a40202f1d8d8391c2eecacc40eb3", hash);
+    }
+
+    [Fact]
+    public void FromJson_ReadsPathLen()
+    {
+        var node = JsonNode.Parse(TestPki.Create().RootJson)!;
+        node["extensions"]!["pathLen"] = 3;
+
+        Assert.Equal(3u, Parse(node.ToJsonString()).PathLen);
+    }
+
+    [Fact]
+    public void FromJson_MissingPathLen_DefaultsToOne()
+    {
+        var node = JsonNode.Parse(TestPki.Create().RootJson)!;
+        node["extensions"]!.AsObject().Remove("pathLen");
+
+        Assert.Equal(1u, Parse(node.ToJsonString()).PathLen);
+    }
+
+    [Fact]
+    public void FromJson_NegativePathLen_Throws()
+    {
+        var node = JsonNode.Parse(TestPki.Create().RootJson)!;
+        node["extensions"]!["pathLen"] = -1;
+
+        Assert.Throws<InvalidOperationException>(() => Parse(node.ToJsonString()));
     }
 
     [Fact]

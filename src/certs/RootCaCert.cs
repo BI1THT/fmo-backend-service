@@ -22,6 +22,8 @@ public sealed class RootCaCert : CertBase
 
     public static RootCaCert FromJson(JsonElement json)
     {
+        var ext = json.GetProperty("extensions");
+
         return new RootCaCert
         {
             Sn = json.GetProperty("sn").GetInt64(),
@@ -29,9 +31,10 @@ public sealed class RootCaCert : CertBase
             IssuerEmail = json.GetProperty("issuer").GetProperty("email").GetString() ?? "",
             SubjectName = json.GetProperty("subject").GetProperty("name").GetString() ?? "",
             SubjectPubKey = Base64Url.Decode(json.GetProperty("subject").GetProperty("publicKey").GetString()!),
-            Crl = json.GetProperty("extensions").GetProperty("crl").GetString() ?? "",
-            License = json.GetProperty("extensions").GetProperty("license").GetString() ?? "",
-            KeyId = json.GetProperty("extensions").GetProperty("keyId").GetString() ?? "",
+            PathLen = CertJsonFields.ReadPathLen(ext, fallback: 1),
+            Crl = ext.GetProperty("crl").GetString() ?? "",
+            License = ext.GetProperty("license").GetString() ?? "",
+            KeyId = ext.GetProperty("keyId").GetString() ?? "",
             Iat = json.GetProperty("iat").GetInt64(),
             Exp = json.GetProperty("exp").GetInt64(),
             Signature = Base64Url.Decode(json.GetProperty("signature").GetString()!)

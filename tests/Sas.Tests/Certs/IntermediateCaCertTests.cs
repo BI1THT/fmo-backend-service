@@ -77,6 +77,41 @@ public sealed class IntermediateCaCertTests
     }
 
     [Fact]
+    public void FromJson_ReadsPathLen()
+    {
+        var cert = Parse(TestPki.Create(new TestPkiOptions { PathLen = 1 }).IntermediateJson);
+
+        Assert.Equal(1u, cert.PathLen);
+    }
+
+    [Fact]
+    public void FromJson_MissingPathLen_DefaultsToZero()
+    {
+        var node = JsonNode.Parse(TestPki.Create().IntermediateJson)!;
+        node["extensions"]!.AsObject().Remove("pathLen");
+
+        Assert.Equal(0u, Parse(node.ToJsonString()).PathLen);
+    }
+
+    [Fact]
+    public void FromJson_NegativePathLen_Throws()
+    {
+        var node = JsonNode.Parse(TestPki.Create().IntermediateJson)!;
+        node["extensions"]!["pathLen"] = -1;
+
+        Assert.Throws<InvalidOperationException>(() => Parse(node.ToJsonString()));
+    }
+
+    [Fact]
+    public void ToTbsCbor_DiffersWhenPathLenChanges()
+    {
+        var zero = Parse(TestPki.Create(new TestPkiOptions { PathLen = 0 }).IntermediateJson);
+        var one = Parse(TestPki.Create(new TestPkiOptions { PathLen = 1 }).IntermediateJson);
+
+        Assert.NotEqual(zero.ToTbsCbor(), one.ToTbsCbor());
+    }
+
+    [Fact]
     public void VerifyBy_CorrectRoot_ReturnsTrue()
     {
         var pki = TestPki.Create();

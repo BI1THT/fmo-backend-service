@@ -55,6 +55,7 @@ public sealed class IntermediateCaCert : CertBase
             SubjectName = json.GetProperty("subject").GetProperty("name").GetString() ?? "",
             SubjectEmail = json.GetProperty("subject").GetProperty("email").GetString() ?? "",
             SubjectPubKey = Base64Url.Decode(json.GetProperty("subject").GetProperty("publicKey").GetString()!),
+            PathLen = CertJsonFields.ReadPathLen(ext, fallback: 0),
             KeyId = ext.GetProperty("keyId").GetString() ?? "",
             Crl = ext.GetProperty("crl").GetString() ?? "",
             License = ext.GetProperty("license").GetString() ?? "",

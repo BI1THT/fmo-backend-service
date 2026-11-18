@@ -352,17 +352,15 @@ public sealed class HttpAuthHandlerTests
     }
 
     [Fact]
-    public void Process_IntermediateWithNonZeroPathLen_IsRejected_CurrentBehavior()
+    public void Process_IntermediateWithNonZeroPathLen_DeniesWithSignatureError()
     {
-        // Current behaviour: IntermediateCaCert.FromJson ignores the JSON
-        // "pathLen" extension, so the rebuilt TBS no longer matches the
-        // signature and the chain is rejected as untrusted. The pathLen check
-        // inside CertVerifier is therefore unreachable through HTTP auth.
+        // pathLen participates in the signature array, so a CA that signed
+        // pathLen=1 verifies correctly and is then rejected by the policy check.
         using var env = new AuthTestEnvironment(pki: new TestPkiOptions { PathLen = 1 });
 
         var ex = Deny(env);
 
-        Assert.Contains("chain invalid: no trusted root", ex.Message);
+        Assert.Contains("chain invalid: intermediate CA signature invalid", ex.Message);
     }
 
     [Fact]

@@ -121,11 +121,13 @@ if (!isAutoAdmin)
 }
 
 Logger.Info($"  Version: {version}");
+Logger.Info($"  Archive: {(config.Archive.Enabled ? config.Archive.Dir : "(disabled)")}");
 
 var rootStore = new RootCaStore(config.Trust.RootsDir);
 var verifier = new CertVerifier();
 var crlManager = new CrlManager(config.Trust.RootsDir, config.Crl.RefreshSec);
 var aclStore = new AclStore(config.Trust.RootsDir);
+var archive = new AuthArchive(config.Archive);
 
 Logger.Info("SAS HTTP auth listening on:");
 if (config.Http.Addr == "0.0.0.0" || config.Http.Addr == "+")
@@ -147,7 +149,7 @@ else
 
 crlManager.Initialize(rootStore.AllRoots.ToArray());
 
-var httpHandler = new HttpAuthHandler(config, rootStore, verifier, crlManager, aclStore);
+var httpHandler = new HttpAuthHandler(config, rootStore, verifier, crlManager, aclStore, archive);
 var template = CreateResponseTemplate(config.Http.ResponseTemplate);
 var httpServer = new HttpServer(config.Http.Addr, config.Http.Port, config.Http.MaxBodyBytes, config.Http.MaxConcurrent, httpHandler, template);
 httpServer.Start();
@@ -167,6 +169,7 @@ catch (OperationCanceledException)
 finally
 {
     httpServer.Stop();
+    archive.Flush();
 }
 
 Logger.Info("SAS stopped.");
@@ -437,6 +440,7 @@ sealed class Config
     public LogConfig Log { get; set; } = new();
     public HttpConfig Http { get; set; } = new();
     public UpdateConfig Update { get; set; } = new();
+    public ArchiveConfig Archive { get; set; } = new();
 
     public sealed class ServerConfig
     {
@@ -945,6 +949,7 @@ sealed class Config
         config!.Crl ??= new();
         config!.Log ??= new();
         config!.Update ??= new();
+        config!.Archive ??= new();
 
         return config!;
     }
@@ -997,6 +1002,7 @@ sealed class Config
         config!.Crl ??= new();
         config!.Log ??= new();
         config!.Update ??= new();
+        config!.Archive ??= new();
 
         return config!;
     }
@@ -1055,6 +1061,12 @@ sealed class Config
                 case "--http-ttl" when i + 1 < flatArgs.Count:
                     config.Http.TtlSec = int.Parse(flatArgs[++i]);
                     break;
+                case "--archive-dir" when i + 1 < flatArgs.Count:
+                    config.Archive.Dir = flatArgs[++i];
+                    break;
+                case "--archive-retention" when i + 1 < flatArgs.Count:
+                    config.Archive.RetentionDays = int.Parse(flatArgs[++i]);
+                    break;
             }
         }
 
@@ -1111,6 +1123,12 @@ sealed class Config
                 case "--http-ttl" when i + 1 < flatArgs.Count:
                     config.Http.TtlSec = int.Parse(flatArgs[++i]);
                     break;
+                case "--archive-dir" when i + 1 < flatArgs.Count:
+                    config.Archive.Dir = flatArgs[++i];
+                    break;
+                case "--archive-retention" when i + 1 < flatArgs.Count:
+                    config.Archive.RetentionDays = int.Parse(flatArgs[++i]);
+                    break;
             }
         }
     }
@@ -1150,7 +1168,8 @@ sealed class Config
     {
         "--server-uid", "--server-callsign", "--mqtt-host", "--mqtt-port",
         "--cert-fingerprint", "--issuer-sn", "--allow-issuer-sn", "--roots-dir",
-        "--crl-refresh", "--http-port", "--http-addr", "--http-ttl", "--log-level"
+        "--crl-refresh", "--http-port", "--http-addr", "--http-ttl", "--log-level",
+        "--archive-dir", "--archive-retention"
     };
 
     private static bool HasInitArgsBeyondConfig(List<string> flatArgs)
@@ -1568,6 +1587,8 @@ sealed class Config
         Console.WriteLine("  --crl-refresh <int>                      CRL 刷新间隔（秒）/ CRL refresh interval (default: 14400)");
         Console.WriteLine("  --roots-dir <path>                       Root CA 证书目录 / Root CA directory (default: ~/.sas/roots)");
         Console.WriteLine("  --log-level <str>                        日志级别 / Log level: Debug/Info/Warn/Error (default: Info)");
+        Console.WriteLine("  --archive-dir <path>                     登录报文归档目录 / Login archive directory (default: ~/.sas/archive)");
+        Console.WriteLine("  --archive-retention <days>               归档保留天数 / Archive retention in days (default: 30)");
         Console.WriteLine();
         Console.WriteLine($"首次运行后配置保存至 / Config saved to: {ConfigPath}");
         Console.WriteLine("后续启动无需参数。 / Subsequent restarts require no arguments.");

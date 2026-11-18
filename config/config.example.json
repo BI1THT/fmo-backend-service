@@ -5,5 +5,6 @@
   "crl": { "refreshSec": 14400 },
   "http": { "addr": "0.0.0.0", "port": 8080, "ttlSec": 14400, "responseTemplate": "emqx", "maxBodyBytes": 65536, "maxConcurrent": 128 },
   "update": { "enabled": true },
-  "log": { "level": "Info" }
+  "log": { "level": "Info" },
+  "archive": { "enabled": true, "dir": "/data/sas/archive", "recordDenied": true, "retentionDays": 30, "maxFileBytes": 16777216 }
 }

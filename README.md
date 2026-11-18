@@ -2,7 +2,7 @@
 
 > [English](README_en.md)
 
-**v1.0.6** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
+**v1.0.7** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
 
 ---
 
@@ -64,6 +64,7 @@ FMO Server Authorizer Service 把信任锚点从"网络上的中心服务器"下
 - Ed25519 高性能签名 – 现代椭圆曲线，安全且快速
 - CBOR 紧凑编码 – 比 JSON 更紧凑，适合嵌入式场景
 - CRL 吊销列表 – 支持证书吊销检查，定时刷新
+- 登录审计归档 – 按呼号保存完整登录报文与证书链，日志带 Root SN 和请求 ID
 - EMQX HTTP 认证集成 – 作为 EMQX Broker 认证回调即插即用
 - 集群支持 – 多个 MQTT Broker 共享同一 SAS 实例进行认证
 - OTA 自动更新 – 内置版本检查与自动升级
@@ -272,7 +273,14 @@ Body: { "username": "${username}", "password": "${password}" }
     "maxConcurrent": 128
   },
   "update": { "enabled": true },
-  "log": { "level": "Info" }
+  "log": { "level": "Info" },
+  "archive": {
+    "enabled": true,
+    "dir": "/data/sas/archive",
+    "recordDenied": true,
+    "retentionDays": 30,
+    "maxFileBytes": 16777216
+  }
 }
 ```
 
@@ -302,8 +310,74 @@ Body: { "username": "${username}", "password": "${password}" }
 | `--issuer-sn` | `server.issuerSn` | 0 |
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
 | `--log-level` | `log.level` | Info |
+| `--archive-dir` | `archive.dir` | `~/.sas/archive` |
+| `--archive-retention` | `archive.retentionDays` | 30 |
 
 > **配置热更新**：当 `~/.sas/config.json` 已存在时，再次使用 CLI 参数启动会自动更新对应字段并保存，无需手动编辑配置文件。
+
+### 登录审计与归档
+
+每次 HTTP 认证都会生成一条结构化日志，并把完整的数字签名报文写入归档文件。
+
+日志中可以看到用户证书链所属的 Root CA 和 Intermediate CA，以及用于关联归档记录的请求 ID：
+
+```text
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=a1b2c3d4e5f6 client=192.168.1.20
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=0f9e8d7c6b5a client=192.168.1.21 reason="timestamp expired"
+```
+
+归档按呼号和日期分组，每行是一个独立 JSON 对象：
+
+```text
+~/.sas/archive/
+  BG6VMZ/
+    2026-11-18.jsonl
+  BD4WPW/
+    2026-11-18.jsonl
+```
+
+```json
+{
+  "v": 1,
+  "ts": "2026-11-18T20:34:56.789+08:00",
+  "requestId": "a1b2c3d4e5f6",
+  "clientIp": "192.168.1.20",
+  "callsign": "BG6VMZ",
+  "result": "allow",
+  "reason": null,
+  "rootSn": 1,
+  "rootName": "BG5ESN",
+  "issuerSn": 1001,
+  "issuerName": "bd4wpw",
+  "userUid": 50001,
+  "role": "user",
+  "claimedRole": "user",
+  "targetCallsign": "BG5ESN",
+  "targetUid": 5001,
+  "targetUrl": "fmo.example.com",
+  "targetPort": 1883,
+  "timestamp": 1783291399,
+  "passwordLength": 4160,
+  "passwordSha256": "9c1d4b5e6f70a1b2",
+  "payloadLength": 3120,
+  "payloadSha256": "3f2a9c1d4b5e6f70",
+  "password": "eyJjZXJ0UGFja2FnZSI6...",
+  "payload": { "certPackage": { "...": "完整原始报文" } }
+}
+```
+
+- `password` 是 base64url 原文，`payload` 是解码后的完整 JSON，可直接用于复现验签或排查。
+- 成功和失败（`result` 为 `allow` / `deny`）都会归档；无法解析的畸形请求只写日志。
+- 归档目录在 Linux 上创建为 `0700`，文件为 `0600`。报文不包含私钥，但包含完整证书链和签名，请勿公开分享。
+- `archive.retentionDays` 为保留天数，`archive.maxFileBytes` 为单文件大小上限（超出后追加 `.1`、`.2` 后缀）。
+- `clientIp` 优先读取 EMQX 透传的 `X-Client-IP` / `X-Real-IP` / `X-Forwarded-For`。仓库的 `docker-compose.yml` 已配置 `X-Client-IP = ${peerhost}`；手动配置 EMQX 时可加上该 Header 以获得真实设备 IP。
+- Docker 中归档位于 `sas-data` 卷内；如需按本地日期切分文件，请设置 `TZ`（Compose 默认 `Asia/Shanghai`）。
+
+查看最近的登录记录：
+
+```bash
+tail -n 20 ~/.sas/archive/BG6VMZ/2026-11-18.jsonl | jq .
+```
 
 ### 管理员管理
 
@@ -426,11 +500,14 @@ fmo-server-authorizer-service/
 │   │   └── CrlManager.cs           ← CRL 下载/缓存/吊销检查
 │   ├── Auth/                       ← 认证处理 + ACL
 │   │   ├── HttpAuthHandler.cs      ← 认证核心逻辑
+│   │   ├── AuthRequestContext.cs   ← 请求上下文（request ID / 归档字段）
 │   │   ├── HttpProofVerifier.cs    ← Ed25519 签名验证
 │   │   ├── AclStore.cs             ← 角色权限 (super/admin/user)
 │   │   └── EmqxResponseTemplate.cs ← EMQX 响应格式
 │   ├── certs/                      ← 证书数据结构 + Ed25519 + Base64Url
-│   ├── Logging/Logger.cs           ← 日志模块
+│   ├── Logging/                    ← 日志与登录归档
+│   │   ├── Logger.cs               ← 控制台日志
+│   │   └── AuthArchive.cs          ← 按呼号归档登录报文
 │   └── builtin/                    ← 内置数据
 │       ├── roots/bg5esn.json       ← 内置 Root CA
 │       └── roles/                  ← 角色权限定义 (super/admin/user)
@@ -457,9 +534,12 @@ fmo-server-authorizer-service/
 │   ├── super.json
 │   ├── admin.json
 │   └── user.json
-└── crl/                   ← CRL 缓存（自动刷新）
-    ├── 1/
-    └── 1001/
+├── crl/                   ← CRL 缓存（自动刷新）
+│   ├── 1/
+│   └── 1001/
+└── archive/               ← 登录报文归档（按呼号/日期）
+    └── BG6VMZ/
+        └── 2026-11-18.jsonl
 ```
 
 ---
@@ -473,7 +553,8 @@ fmo-server-authorizer-service/
 | `Root CA self-signature failed` | 证书文件损坏，重新获取 |
 | `curl` 返回空或拒绝连接 | 检查端口 8080 是否被防火墙阻挡 |
 | CRL 刷新 404 | 正常——CRL URL 暂不可用，不影响服务运行 |
-| 认证始终 deny | 检查证书链是否完整、证书是否过期或被吊销 |
+| 认证始终 deny | 检查证书链是否完整、证书是否过期或被吊销；用日志中的 `req` 到归档里查完整报文 |
+| 归档目录为空 | 检查 `archive.enabled`；只有能解析出 password JSON 的请求才会归档 |
 
 ---
 
@@ -484,6 +565,7 @@ fmo-server-authorizer-service/
 3. **真相源**：首次初始化后，可通过编辑 `config.json` 修改配置（重启生效），也可通过 CLI 参数重新启动来自动更新配置。
 4. **升级**：`sas --update` 自动下载最新版本并重启（或关闭自动检查：`update.enabled = false`）。
 5. **设备侧**：FMO 设备固件需使用 SAS HTTP 认证器模式（MQTT CONNECT 时 username/password 携带证书信息）。
+6. **登录归档**：归档文件包含完整证书链和 proof 签名（不含私钥），仅用于审计和故障排查。请限制归档目录访问权限，并按需调整 `archive.retentionDays` 与 `archive.maxFileBytes`。
 
 ---
 

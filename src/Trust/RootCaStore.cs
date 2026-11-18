@@ -92,7 +92,7 @@ public sealed class RootCaStore
                 }
 
                 _roots.Add(root);
-                Logger.Info($"Loaded Root CA: sn={root.Sn} keyId={root.KeyId}");
+                Logger.Info($"Loaded Root CA: sn={root.Sn} name={root.SubjectName} keyId={root.KeyId}");
             }
             catch (Exception ex)
             {

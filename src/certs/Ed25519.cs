@@ -4,6 +4,9 @@ public static class Ed25519
 {
     public static bool Verify(byte[] publicKey, byte[] data, byte[] signature)
     {
+        if (publicKey is not { Length: 32 } || signature is not { Length: 64 })
+            return false;
+
         return Chaos.NaCl.Ed25519.Verify(signature, data, publicKey);
     }
 

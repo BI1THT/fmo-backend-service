@@ -92,6 +92,9 @@ sealed class HttpServer
 
     private async Task HandleRequestCoreAsync(HttpListenerContext ctx)
     {
+        var requestId = Guid.NewGuid().ToString("N")[..12];
+        var clientIp = GetClientIp(ctx.Request);
+
         try
         {
             if (ctx.Request.HttpMethod != "POST" ||
@@ -116,6 +119,7 @@ sealed class HttpServer
             }
             catch
             {
+                Logger.Warn($"HTTP auth: malformed request body req={requestId} client={clientIp ?? "-"} reason=\"invalid json\"");
                 await WriteDenyResponse(ctx.Response);
                 return;
             }
@@ -123,11 +127,11 @@ sealed class HttpServer
             var username = json.TryGetProperty("username", out var un) ? un.GetString() ?? "" : "";
             var password = json.TryGetProperty("password", out var pw) ? pw.GetString() ?? "" : "";
 
-            Logger.Debug($"HTTP auth: received request username={username} password.length={password.Length}");
+            Logger.Debug($"HTTP auth: received request username={username} password.length={password.Length} req={requestId} client={clientIp ?? "-"}");
 
             if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             {
-                Logger.Debug("HTTP auth: empty username or password, denying");
+                Logger.Warn($"HTTP auth: malformed request req={requestId} client={clientIp ?? "-"} reason=\"empty username or password\"");
                 await WriteDenyResponse(ctx.Response);
                 return;
             }
@@ -135,7 +139,7 @@ sealed class HttpServer
             object responseBody;
             try
             {
-                var result = _handler.Process(username, password);
+                var result = _handler.Process(username, password, requestId, clientIp);
                 responseBody = _template.BuildAllow(result);
             }
             catch (AuthDeniedException)
@@ -144,7 +148,7 @@ sealed class HttpServer
             }
             catch (Exception ex)
             {
-                Logger.Error($"HTTP auth: internal error: {ex}");
+                Logger.Error($"HTTP auth: internal error req={requestId} client={clientIp ?? "-"}: {ex}");
                 responseBody = _template.BuildDeny();
             }
 
@@ -190,6 +194,18 @@ sealed class HttpServer
             totalRead += read;
         }
         return Encoding.UTF8.GetString(buffer, 0, totalRead);
+    }
+
+    private static string? GetClientIp(HttpListenerRequest request)
+    {
+        foreach (var name in new[] { "X-Client-IP", "X-Real-IP", "X-Forwarded-For" })
+        {
+            var value = request.Headers[name];
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Split(',')[0].Trim();
+        }
+
+        return request.RemoteEndPoint?.Address.ToString();
     }
 
     private static async Task WriteDenyResponse(HttpListenerResponse response)

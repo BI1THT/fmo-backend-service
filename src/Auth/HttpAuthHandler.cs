@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Sas.certs;
 using Sas.Logging;
@@ -13,15 +15,18 @@ sealed class HttpAuthHandler
     private readonly CertVerifier _verifier;
     private readonly CrlManager _crlManager;
     private readonly AclStore _aclStore;
+    private readonly AuthArchive _archive;
 
     public HttpAuthHandler(Config config, RootCaStore rootStore,
-        CertVerifier verifier, CrlManager crlManager, AclStore aclStore)
+        CertVerifier verifier, CrlManager crlManager, AclStore aclStore,
+        AuthArchive archive)
     {
         _config = config;
         _rootStore = rootStore;
         _verifier = verifier;
         _crlManager = crlManager;
         _aclStore = aclStore;
+        _archive = archive;
     }
 
     private sealed record ServerIdentity(long Uid, string Callsign, string MqttHost, int MqttPort, string CertFingerprint);
@@ -51,24 +56,36 @@ sealed class HttpAuthHandler
         return null;
     }
 
-    public AuthResult Process(string username, string password)
+    public AuthResult Process(string username, string password, string requestId, string? clientIp)
     {
-        Logger.Debug($"HTTP auth: >>> start processing username={username}");
+        var ctx = new AuthRequestContext(username, password, requestId, clientIp);
+
+        Logger.Debug($"HTTP auth: >>> start processing username={username} req={requestId} client={clientIp ?? "-"}");
 
         HttpPasswordPayload payload;
         try
         {
-            var passwordJson = System.Text.Encoding.UTF8.GetString(
+            var passwordJson = Encoding.UTF8.GetString(
                 Base64Url.Decode(password));
-            Logger.Debug($"HTTP auth: decoded password JSON length={passwordJson.Length}");
-            payload = JsonSerializer.Deserialize<HttpPasswordPayload>(passwordJson)
+
+            using var doc = JsonDocument.Parse(passwordJson);
+            ctx.SetDecodedPayload(passwordJson, doc.RootElement.Clone());
+
+            payload = doc.RootElement.Deserialize<HttpPasswordPayload>()
                 ?? throw new InvalidOperationException("null payload");
         }
         catch (Exception ex)
         {
-            Logger.Warn($"HTTP auth: failed to parse password payload: {ex.Message}");
-            throw new AuthDeniedException("invalid password format");
+            Logger.Debug($"HTTP auth: failed to parse password payload: {ex.Message} req={requestId}");
+            throw Deny(ctx, "invalid password format");
         }
+
+        ctx.ClaimedRole = payload.Role;
+        ctx.TargetCallsign = payload.TargetCallsign;
+        ctx.TargetUid = payload.TargetUID;
+        ctx.TargetUrl = payload.TargetUrl;
+        ctx.TargetPort = payload.TargetPort;
+        ctx.Timestamp = payload.Timestamp;
 
         Logger.Debug($"HTTP auth: payload: targetCallsign={payload.TargetCallsign} targetUID={payload.TargetUID} targetUrl={payload.TargetUrl} targetPort={payload.TargetPort} timestamp={payload.Timestamp} role={payload.Role}");
         Logger.Debug($"HTTP auth: payload: serverFingerprint={payload.ServerFingerprint[..Math.Min(8, payload.ServerFingerprint.Length)]}...");
@@ -82,11 +99,16 @@ sealed class HttpAuthHandler
         }
         catch (Exception ex)
         {
-            Logger.Warn($"HTTP auth: failed to parse cert package: {ex.Message}");
-            throw new AuthDeniedException("invalid certificate format");
+            Logger.Debug($"HTTP auth: failed to parse cert package: {ex.Message} req={requestId}");
+            throw Deny(ctx, "invalid certificate format");
         }
 
-        Logger.Debug($"HTTP auth: intermediate: sn={intermediate.Sn} issuerSn={intermediate.IssuerSn}");
+        ctx.Callsign = user.Callsign;
+        ctx.UserUid = user.Uid;
+        ctx.IssuerSn = intermediate.Sn;
+        ctx.IssuerName = intermediate.SubjectName;
+
+        Logger.Debug($"HTTP auth: intermediate: sn={intermediate.Sn} issuerSn={intermediate.IssuerSn} subject={intermediate.SubjectName}");
         Logger.Debug($"HTTP auth: user: callsign={user.Callsign} uid={user.Uid} publicKey.length={user.PublicKey?.Length ?? 0}");
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -94,64 +116,54 @@ sealed class HttpAuthHandler
 
         var root = _rootStore.FindIssuer(intermediate);
         if (root == null)
-        {
-            Logger.Warn($"HTTP auth: no trusted root found for intermediate sn={intermediate.Sn}");
-            throw new AuthDeniedException("chain invalid: no trusted root");
-        }
+            throw Deny(ctx, "chain invalid: no trusted root");
+
+        ctx.RootSn = root.Sn;
+        ctx.RootName = root.SubjectName;
         Logger.Debug($"HTTP auth: matched root: sn={root.Sn} subject={root.SubjectName}");
 
         var vr = _verifier.VerifyFullChain(root, intermediate, user, now);
         if (vr != VerifyResult.OK)
-        {
-            Logger.Warn($"HTTP auth: chain validation failed: {CertVerifier.GetMessage(vr)}");
-            throw new AuthDeniedException("chain invalid");
-        }
+            throw Deny(ctx, $"chain invalid: {CertVerifier.GetMessage(vr)}");
+
         Logger.Debug("HTTP auth: certificate chain verification passed");
 
         if (!string.Equals(username, user.Callsign, StringComparison.OrdinalIgnoreCase))
-        {
-            Logger.Warn($"HTTP auth: username mismatch: request={username} cert={user.Callsign}");
-            throw new AuthDeniedException("username mismatch");
-        }
+            throw Deny(ctx, $"username mismatch: request={username} cert={user.Callsign}");
 
         if (_config.Trust.AllowIssuerSn.Length > 0 &&
             !_config.Trust.AllowIssuerSn.Contains(intermediate.Sn))
         {
-            Logger.Warn($"HTTP auth: intermediate sn={intermediate.Sn} not in allow list");
-            throw new AuthDeniedException("intermediate not trusted");
+            throw Deny(ctx, $"intermediate not trusted: sn={intermediate.Sn}");
         }
 
         _crlManager.RegisterIntermediate(intermediate);
 
         var rootOutdated = _crlManager.IsRootCrlOutdated(root.Sn, now);
         if (rootOutdated)
-            Logger.Warn($"HTTP auth: root CRL for sn={root.Sn} may be outdated");
+        {
+            Logger.Warn($"HTTP auth: root CRL outdated rootSn={root.Sn} rootName={root.SubjectName} callsign={user.Callsign} req={requestId}");
+        }
 
         if (_crlManager.IsIntermediateRevoked(intermediate.Sn, intermediate.Fingerprint(), out var intReason))
-        {
-            Logger.Warn($"HTTP auth: intermediate revoked: {intReason}");
-            throw new AuthDeniedException("intermediate revoked");
-        }
+            throw Deny(ctx, $"intermediate revoked: {intReason}");
 
         if (_crlManager.IsUserRevoked(user.Uid, user.Fingerprint(), out var userReason))
-        {
-            Logger.Warn($"HTTP auth: user revoked: {userReason}");
-            throw new AuthDeniedException("user revoked");
-        }
+            throw Deny(ctx, $"user revoked: {userReason}");
 
         var server = FindMatchingServer(payload.TargetCallsign, payload.TargetUID, payload.TargetUrl, payload.TargetPort);
         if (server == null)
         {
-            Logger.Warn($"HTTP auth: no matching server/cluster for targetCallsign={payload.TargetCallsign} targetUID={payload.TargetUID} targetUrl={payload.TargetUrl} targetPort={payload.TargetPort}");
-            throw new AuthDeniedException("server identity mismatch");
+            throw Deny(ctx,
+                $"server identity mismatch: target={payload.TargetCallsign}/{payload.TargetUID} {payload.TargetUrl}:{payload.TargetPort}");
         }
-        
+
         var role = DetermineRole(user, server);
+        ctx.Role = role;
         if (!string.IsNullOrEmpty(payload.Role) &&
             !string.Equals(payload.Role, role, StringComparison.OrdinalIgnoreCase))
         {
-            Logger.Warn($"HTTP auth: role mismatch: claimed={payload.Role} actual={role}");
-            throw new AuthDeniedException("role mismatch");
+            throw Deny(ctx, $"role mismatch: claimed={payload.Role} actual={role}");
         }
 
         byte[] serverFpBytes;
@@ -161,36 +173,28 @@ sealed class HttpAuthHandler
         }
         catch
         {
-            Logger.Warn("HTTP auth: invalid serverFingerprint base64url");
-            throw new AuthDeniedException("invalid server fingerprint");
+            throw Deny(ctx, "invalid server fingerprint");
         }
 
         if (string.IsNullOrEmpty(server.CertFingerprint))
-        {
-            Logger.Warn("HTTP auth: server certFingerprint not configured for matched server");
-            throw new AuthDeniedException("server cert fingerprint not configured");
-        }
+            throw Deny(ctx, "server cert fingerprint not configured");
 
         byte[] expectedFp;
-        try { expectedFp = Base64Url.Decode(server.CertFingerprint); }
+        try
+        {
+            expectedFp = Base64Url.Decode(server.CertFingerprint);
+        }
         catch
         {
-            Logger.Warn("HTTP auth: invalid server.certFingerprint base64url");
-            throw new AuthDeniedException("server cert fingerprint not configured");
+            throw Deny(ctx, "server cert fingerprint not configured: invalid base64url");
         }
 
         if (expectedFp.Length != 32 || !serverFpBytes.AsSpan().SequenceEqual(expectedFp))
-        {
-            Logger.Warn("HTTP auth: serverFingerprint mismatch with configured certFingerprint");
-            throw new AuthDeniedException("server identity mismatch");
-        }
+            throw Deny(ctx, "server fingerprint mismatch");
 
         Logger.Debug($"HTTP auth: checking timestamp: payload={payload.Timestamp} server={now} drift={Math.Abs(now - payload.Timestamp)}s");
         if (!HttpProofVerifier.IsTimestampValid(payload.Timestamp, now))
-        {
-            Logger.Warn($"HTTP auth: timestamp drifted too far: payload={payload.Timestamp} server={now}");
-            throw new AuthDeniedException("timestamp expired");
-        }
+            throw Deny(ctx, "timestamp expired");
 
         Logger.Debug($"HTTP auth: verifying proof: serverUid={server.Uid} targetCallsign={server.Callsign} mqttHost={server.MqttHost} mqttPort={server.MqttPort}");
         var proofOk = HttpProofVerifier.Verify(
@@ -199,10 +203,7 @@ sealed class HttpAuthHandler
             payload.Timestamp, user, payload.Role, payload.Proof.Signature);
 
         if (!proofOk)
-        {
-            Logger.Warn($"HTTP auth: proof signature verification failed for {user.Callsign}");
-            throw new AuthDeniedException("proof invalid");
-        }
+            throw Deny(ctx, "proof invalid");
 
         var isSuperuser = role == "super";
         var (allDefs, pubDefs, subDefs) = _aclStore.GetPermissions(role);
@@ -215,7 +216,8 @@ sealed class HttpAuthHandler
         var maxJitter = Math.Min(ttlJitterSec, Math.Max(1, _config.Http.TtlSec / 2));
         var exp = now + _config.Http.TtlSec + Random.Shared.NextInt64(-maxJitter, maxJitter + 1);
 
-        Logger.Info($"HTTP auth: allowed {user.Callsign} uid={user.Uid} role={role}");
+        Logger.Info($"HTTP auth: allow {Scope(ctx)} uid={user.Uid} role={role} target={server.Callsign}:{server.MqttPort}");
+        _archive.Write(ctx.ToRecord("allow", null));
 
         return new AuthResult
         {
@@ -230,6 +232,27 @@ sealed class HttpAuthHandler
             SubTopics = subTopics
         };
     }
+
+    private AuthDeniedException Deny(AuthRequestContext ctx, string reason)
+    {
+        Logger.Warn($"HTTP auth: deny {Scope(ctx)} reason=\"{reason}\"");
+
+        if (ctx.Payload.HasValue && _config.Archive.RecordDenied)
+            _archive.Write(ctx.ToRecord("deny", reason));
+
+        return new AuthDeniedException(reason);
+    }
+
+    private static string Scope(AuthRequestContext ctx)
+    {
+        return $"callsign={ctx.Callsign} rootSn={Sn(ctx.RootSn)} rootName={ctx.RootName ?? "-"} " +
+               $"issuerSn={Sn(ctx.IssuerSn)} issuerName={ctx.IssuerName ?? "-"} " +
+               $"payloadLen={ctx.PayloadLength} payloadSha256={ctx.PayloadHash} " +
+               $"req={ctx.RequestId} client={ctx.ClientIp ?? "-"}";
+    }
+
+    private static string Sn(long? value) =>
+        value?.ToString(CultureInfo.InvariantCulture) ?? "?";
 
     private string DetermineRole(UserCert user, ServerIdentity server)
     {

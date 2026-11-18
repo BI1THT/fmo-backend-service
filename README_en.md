@@ -2,7 +2,7 @@
 
 > [中文](README.md)
 
-**v1.0.6** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
+**v1.0.7** | .NET 10.0 | Ed25519 | CBOR | Self-contained Single Binary
 
 ---
 
@@ -64,6 +64,7 @@ Only devices holding legitimate certificates can establish communication. Securi
 - Ed25519 High-Performance Signatures – Modern elliptic curve, secure and fast
 - CBOR Compact Encoding – More compact than JSON, suitable for embedded scenarios
 - CRL Revocation Lists – Certificate revocation checking with periodic refresh
+- Login Audit Archive – Full login payloads archived per callsign; logs include Root SN and request ID
 - EMQX HTTP Auth Integration – Plug-and-play as EMQX Broker authentication callback
 - Cluster Support – Multiple MQTT Brokers sharing a single SAS instance for authentication
 - OTA Auto-Update – Built-in version checking and automatic upgrades
@@ -260,7 +261,14 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
     "maxConcurrent": 128
   },
   "update": { "enabled": true },
-  "log": { "level": "Info" }
+  "log": { "level": "Info" },
+  "archive": {
+    "enabled": true,
+    "dir": "/data/sas/archive",
+    "recordDenied": true,
+    "retentionDays": 30,
+    "maxFileBytes": 16777216
+  }
 }
 ```
 
@@ -290,8 +298,74 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 | `--issuer-sn` | `server.issuerSn` | 0 |
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
 | `--log-level` | `log.level` | Info |
+| `--archive-dir` | `archive.dir` | `~/.sas/archive` |
+| `--archive-retention` | `archive.retentionDays` | 30 |
 
 > **Config Hot-Update**: When `~/.sas/config.json` already exists, launching with CLI arguments will automatically update the corresponding fields and save — no manual editing required.
+
+### Login Audit & Archive
+
+Every HTTP authentication produces a structured log line and stores the complete signed payload in an archive file.
+
+The log shows which Root CA and Intermediate CA issued the user certificate, plus a request ID that links the line to its archive record:
+
+```text
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=a1b2c3d4e5f6 client=192.168.1.20
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 req=0f9e8d7c6b5a client=192.168.1.21 reason="timestamp expired"
+```
+
+Records are grouped by callsign and day, one JSON object per line:
+
+```text
+~/.sas/archive/
+  BG6VMZ/
+    2026-11-18.jsonl
+  BD4WPW/
+    2026-11-18.jsonl
+```
+
+```json
+{
+  "v": 1,
+  "ts": "2026-11-18T20:34:56.789+08:00",
+  "requestId": "a1b2c3d4e5f6",
+  "clientIp": "192.168.1.20",
+  "callsign": "BG6VMZ",
+  "result": "allow",
+  "reason": null,
+  "rootSn": 1,
+  "rootName": "BG5ESN",
+  "issuerSn": 1001,
+  "issuerName": "bd4wpw",
+  "userUid": 50001,
+  "role": "user",
+  "claimedRole": "user",
+  "targetCallsign": "BG5ESN",
+  "targetUid": 5001,
+  "targetUrl": "fmo.example.com",
+  "targetPort": 1883,
+  "timestamp": 1783291399,
+  "passwordLength": 4160,
+  "passwordSha256": "9c1d4b5e6f70a1b2",
+  "payloadLength": 3120,
+  "payloadSha256": "3f2a9c1d4b5e6f70",
+  "password": "eyJjZXJ0UGFja2FnZSI6...",
+  "payload": { "certPackage": { "...": "complete original payload" } }
+}
+```
+
+- `password` is the original base64url string and `payload` is the decoded JSON, so any attempt can be re-verified or inspected.
+- Both successes and failures (`result` = `allow` / `deny`) are archived; malformed requests that cannot be decoded are only logged.
+- On Linux the archive directory is created as `0700` and files as `0600`. Payloads contain no private keys, but do contain the full certificate chain and signatures — do not share them publicly.
+- `archive.retentionDays` controls retention; `archive.maxFileBytes` caps each file (overflow goes to `.1`, `.2`, ...).
+- `clientIp` prefers the `X-Client-IP` / `X-Real-IP` / `X-Forwarded-For` header forwarded by EMQX. The bundled `docker-compose.yml` sets `X-Client-IP = ${peerhost}`; add this header when configuring EMQX manually to capture the real device IP.
+- In Docker the archive lives in the `sas-data` volume. Set `TZ` if you want files split by local date (Compose defaults to `Asia/Shanghai`).
+
+Inspect recent records:
+
+```bash
+tail -n 20 ~/.sas/archive/BG6VMZ/2026-11-18.jsonl | jq .
+```
 
 ### Admin Management
 
@@ -414,11 +488,14 @@ fmo-server-authorizer-service/
 │   │   └── CrlManager.cs           ← CRL download/cache/revocation check
 │   ├── Auth/                       ← Auth processing + ACL
 │   │   ├── HttpAuthHandler.cs      ← Core auth logic
+│   │   ├── AuthRequestContext.cs   ← Request context (request ID / archive fields)
 │   │   ├── HttpProofVerifier.cs    ← Ed25519 signature verification
 │   │   ├── AclStore.cs             ← Role permissions (super/admin/user)
 │   │   └── EmqxResponseTemplate.cs ← EMQX response format
 │   ├── certs/                      ← Cert data structures + Ed25519 + Base64Url
-│   ├── Logging/Logger.cs           ← Logging module
+│   ├── Logging/                    ← Logging and login archive
+│   │   ├── Logger.cs               ← Console logging
+│   │   └── AuthArchive.cs          ← Per-callsign login payload archive
 │   └── builtin/                    ← Built-in data
 │       ├── roots/bg5esn.json       ← Built-in Root CA
 │       └── roles/                  ← Role permission definitions (super/admin/user)
@@ -445,9 +522,12 @@ fmo-server-authorizer-service/
 │   ├── super.json
 │   ├── admin.json
 │   └── user.json
-└── crl/                   ← CRL cache (auto-refreshed)
-    ├── 1/
-    └── 1001/
+├── crl/                   ← CRL cache (auto-refreshed)
+│   ├── 1/
+│   └── 1001/
+└── archive/               ← Login payload archive (per callsign/day)
+    └── BG6VMZ/
+        └── 2026-11-18.jsonl
 ```
 
 ---
@@ -461,7 +541,8 @@ fmo-server-authorizer-service/
 | `Root CA self-signature failed` | Certificate file corrupted, re-obtain |
 | `curl` returns empty or connection refused | Check if port 8080 is blocked by firewall |
 | CRL refresh 404 | Normal — CRL URL temporarily unavailable, doesn't affect service |
-| Auth always returns deny | Check certificate chain completeness, expiration, or revocation |
+| Auth always returns deny | Check certificate chain completeness, expiration, or revocation; use the log `req` ID to find the full payload in the archive |
+| Archive directory is empty | Check `archive.enabled`; only requests whose password JSON can be decoded are archived |
 
 ---
 
@@ -472,6 +553,7 @@ fmo-server-authorizer-service/
 3. **Source of Truth**: After initial setup, modify configuration by editing `config.json` (restart to apply), or re-launch with CLI arguments to auto-update the config.
 4. **Upgrades**: `sas --update` automatically downloads the latest version and restarts (disable: `update.enabled = false`).
 5. **Device Side**: FMO device firmware must use SAS HTTP authenticator mode (carrying certificate info in username/password during MQTT CONNECT).
+6. **Login Archive**: Archive files contain the full certificate chain and proof signatures (no private keys) and are intended for auditing and troubleshooting. Restrict access to the archive directory and tune `archive.retentionDays` / `archive.maxFileBytes` as needed.
 
 ---
 

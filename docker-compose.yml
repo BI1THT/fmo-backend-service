@@ -14,6 +14,8 @@ services:
       - ${SAS_MQTT_PORT:-1883}
       - --cert-fingerprint
       - ${SAS_CERT_FINGERPRINT:?Set SAS_CERT_FINGERPRINT in .env}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     expose:
       - "8080"
     volumes:
@@ -29,7 +31,7 @@ services:
       - sas
     environment:
       EMQX_AUTHENTICATION__1: >-
-        {mechanism = password_based, backend = http, method = post, url = "http://sas:8080/auth", headers = {"Content-Type" = "application/json"}, body = {username = "$${username}", password = "$${password}"}}
+        {mechanism = password_based, backend = http, method = post, url = "http://sas:8080/auth", headers = {"Content-Type" = "application/json", "X-Client-IP" = "$${peerhost}"}, body = {username = "$${username}", password = "$${password}"}}
       EMQX_DASHBOARD__DEFAULT_USERNAME: '"${EMQX_DASHBOARD_USERNAME:-admin}"'
       EMQX_DASHBOARD__DEFAULT_PASSWORD: '"${EMQX_DASHBOARD_PASSWORD:?Set EMQX_DASHBOARD_PASSWORD in .env}"'
     ports:

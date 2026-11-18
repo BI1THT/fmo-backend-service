@@ -52,18 +52,22 @@ dotnet tool install dotnet-coverage --tool-path ./.tools
 
 ## 已知行为（测试按现状锁定，待单独修复）
 
-以下行为已由测试固定，修复时需同步更新用例名称带 `CurrentBehavior` 的测试：
+以下行为已由测试固定，修复时需同步更新相关用例：
 
-1. **角色判定与协议文档 §12.1 不一致**：代码中"指纹命中 `admins[]`"返回 `admin`（或自定义角色），文档写的是 `super`；`admins` 为空时服务器自身 UID 返回 `super`。
-2. **Root CA 过期不校验**：`RootCaStore` 与 `CertVerifier` 都不检查 `root.exp`。
-3. **Intermediate/Root 证书的 `pathLen` 被 `FromJson` 丢弃**：`IntermediateCaCert.FromJson` 不读取 `extensions.pathLen`，导致 `pathLen != 0` 的证书 TBS 与签名不一致，最终表现为 `no trusted root`；`CertVerifier` 中的 `pathLen` 检查在 HTTP 路径上不可达。
-4. **`Realm`/`PayloadLength` 以 UTF-16 字符计数**，而协议描述为长度（字节）。
-5. **`LogSafe.Format` 最大输出 `maxLength + 1`**（达到上限后追加 `…`）。
-6. **`CrlNumber` 由 `long` 强转 `uint`**，负值会回绕成 42 亿。
-7. **CRL fail-open**：完全无法获取 CRL 时仍放行（文档只规定了"过期且刷新失败放行"）。
-8. **呼号允许 `/`，归档目录将其替换为 `_`**，目录名与呼号不完全一致。
-9. **非 `/auth` 路径由 `HttpListener` 返回 404**，不会得到 `{"result":"deny"}`。
-10. **`Base64Url.Decode` 忽略空白字符**（`Convert.FromBase64String` 的既有行为），43 字符长度检查不能保证字符集合法。
-11. **内置角色 JSON 与代码兜底默认值漂移**：`src/builtin/roles/*.json` 使用 `FMO/SERVER_INFO/#`，`AclStore.LoadBuiltinDefaults()` 使用 `FMO/SERVER_INFO`。
-12. **归档文件轮转不处理单条超限**：只有已写入过内容（`Bytes > 0`）才会因超限触发轮转。
-13. **归档记录降级只执行一次**：摘要仍超限时不再截断。
+1. **Root CA 过期不校验**：`RootCaStore` 与 `CertVerifier` 都不检查 `root.exp`。
+2. **`PayloadLength` 以 UTF-16 字符计数**，而协议描述为长度（字节）。
+3. **`LogSafe.Format` 最大输出 `maxLength + 1`**（达到上限后追加 `…`）。
+4. **`CrlNumber` 由 `long` 强转 `uint`**，负值会回绕成 42 亿。
+5. **CRL fail-open**：完全无法获取 CRL 时仍放行（文档只规定了"过期且刷新失败放行"）。
+6. **呼号允许 `/`，归档目录将其替换为 `_`**，目录名与呼号不完全一致。
+7. **非 `/auth` 路径由 `HttpListener` 返回 404**，不会得到 `{"result":"deny"}`。
+8. **`Base64Url.Decode` 忽略空白字符**（`Convert.FromBase64String` 的既有行为），43 字符长度检查不能保证字符集合法。
+9. **内置角色 JSON 与代码兜底默认值漂移**：`src/builtin/roles/*.json` 使用 `FMO/SERVER_INFO/#`，`AclStore.LoadBuiltinDefaults()` 使用 `FMO/SERVER_INFO`。
+10. **归档文件轮转不处理单条超限**：只有已写入过内容（`Bytes > 0`）才会因超限触发轮转。
+11. **归档记录降级只执行一次**：摘要仍超限时不再截断。
+
+已修复并移除的条目：
+
+- 角色判定与协议文档不一致（现为"服务器自身 UID + 指纹 → super；`admins[]` → admin/自定义角色；其他 → user"）。
+- `pathLen` 未参与证书解析（Root 缺失时默认 1，Intermediate 缺失时默认 0，越界值报错）。
+

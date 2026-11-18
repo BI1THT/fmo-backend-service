@@ -1,4 +1,5 @@
 using Sas.Auth;
+using Sas.certs;
 using Sas.Logging;
 using Sas.Trust;
 
@@ -30,11 +31,13 @@ internal sealed class AuthTestEnvironment : IDisposable
         Temp = new TempDirectory("auth");
         Pki = TestPki.Create(pki);
         Clock = new FixedTimeProvider(now ?? DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
-        ServerFingerprint = TestPki.RandomFingerprint(0xAB);
 
         var rootsDir = Temp.CreateSubdirectory("roots");
         File.WriteAllText(Path.Combine(rootsDir, "root.json"), Pki.RootJson);
 
+        // The server's own certificate fingerprint is what the payload targets
+        // and what the config trusts, exactly like a real deployment.
+        ServerFingerprint = Base64Url.Encode(Pki.User.Fingerprint());
         Config = TestConfig.Create(rootsDir, Temp.Combine("archive"), serverFingerprint: ServerFingerprint);
         configure?.Invoke(Config);
 

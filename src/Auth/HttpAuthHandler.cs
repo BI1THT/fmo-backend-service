@@ -294,26 +294,60 @@ internal sealed class HttpAuthHandler : IAuthHandler
     private static string Sn(long? value) =>
         value?.ToString(CultureInfo.InvariantCulture) ?? "?";
 
+    private int _serverFpMismatchLogged;
+
     private string DetermineRole(UserCert user, ServerIdentity server)
     {
-        if (_config.Server.Admins.Length == 0)
-            return user.Uid == server.Uid ? "super" : "user";
-
         var userFp = user.Fingerprint();
+
+        // The server's own certificate: both UID and fingerprint must match, so
+        // a different key reusing the same UID can never self-promote. Use the
+        // matched identity's fingerprint so cluster nodes work the same way.
+        if (user.Uid == server.Uid &&
+            TryDecodeFingerprint(server.CertFingerprint, out var serverFp) &&
+            serverFp.AsSpan().SequenceEqual(userFp))
+        {
+            return "super";
+        }
+
         foreach (var admin in _config.Server.Admins)
         {
             if (admin.Uid != user.Uid)
                 continue;
 
-            byte[] adminFp;
-            try { adminFp = Base64Url.Decode(admin.CertFingerprint); }
-            catch { continue; }
+            if (!TryDecodeFingerprint(admin.CertFingerprint, out var adminFp))
+            {
+                Logger.Warn($"HTTP auth: ignoring admin entry uid={admin.Uid}: invalid certFingerprint");
+                continue;
+            }
 
             if (adminFp.AsSpan().SequenceEqual(userFp))
                 return string.IsNullOrEmpty(admin.Role) ? "admin" : admin.Role;
         }
 
-        return user.Uid == server.Uid ? "super" : "user";
+        // Same UID as the server but a different key: never auto-promote. Warn
+        // once so a misconfigured fingerprint does not silently lose super.
+        if (user.Uid == server.Uid && Interlocked.Exchange(ref _serverFpMismatchLogged, 1) == 0)
+        {
+            Logger.Warn($"HTTP auth: certificate for server uid={server.Uid} does not match " +
+                        $"server.certFingerprint; treating as user (check config)");
+        }
+
+        return "user";
+    }
+
+    private static bool TryDecodeFingerprint(string encoded, out byte[] fingerprint)
+    {
+        try
+        {
+            fingerprint = Base64Url.Decode(encoded);
+            return fingerprint.Length == 32;
+        }
+        catch
+        {
+            fingerprint = [];
+            return false;
+        }
     }
 }
 

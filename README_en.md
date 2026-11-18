@@ -402,8 +402,8 @@ sas --remove-admin [--config <path>]
 sas --list-admins [--config <path>]
 ```
 
-- The **super role** is automatically determined by the server's own UID (`user.uid == server.uid`) — no manual configuration needed
-- The admin list only stores regular admins (admin role), stored in the `Server.admins` array in `config.json`
+- The **super role** requires both the server's own UID and certificate fingerprint (`user.uid == server.uid` and the cert fingerprint equals `server.certFingerprint`) — no manual configuration needed
+- The admin list only stores regular admins (admin role), stored in the `Server.admins` array in `config.json`; entries match on UID + certificate fingerprint
 - Use `--config <path>` to specify a non-default config file location
 
 For Docker Compose deployments, manage administrators interactively in the running SAS container:
@@ -431,7 +431,7 @@ sas --list-clusters [--config <path>]
 
 - Cluster node information is stored in the `Mqtt.clusters` array in `config.json`
 - Once added, devices connecting to these Brokers can also authenticate through this SAS
-- The cluster node's UID owner automatically gets the super role on that node
+- The cluster node's UID plus matching certificate fingerprint grants the super role on that node
 
 For Docker Compose deployments, register an independent FMO service through the shared SAS configuration volume:
 

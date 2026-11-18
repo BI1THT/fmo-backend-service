@@ -176,6 +176,102 @@ public sealed class HttpAuthHandlerTests
         Assert.Equal("user", result.Role);
     }
 
+
+    [Fact]
+    public void Process_ServerUidButDifferentCertificate_IsUser()
+    {
+        using var env = new AuthTestEnvironment(pki: new TestPkiOptions
+        {
+            UserUid = TestConfig.DefaultServerUid
+        });
+        var otherFp = TestPki.RandomFingerprint(0x99);
+        env.Config.Server.CertFingerprint = otherFp;
+
+        var password = env.Pki.BuildPassword(env.Config.Server.Uid, env.Config.Server.Callsign,
+            env.Config.Server.Uid, env.Config.Mqtt.Host, env.Config.Mqtt.Port,
+            otherFp, env.Now, "user");
+
+        var result = env.Handler.Process(env.Username, password, "req-test");
+
+        Assert.Equal("user", result.Role);
+        Assert.False(result.IsSuperuser);
+    }
+
+
+    [Fact]
+    public void Process_ServerOwnCertListedInAdmins_IsStillSuper()
+    {
+        using var env = new AuthTestEnvironment(pki: new TestPkiOptions
+        {
+            UserUid = TestConfig.DefaultServerUid
+        });
+        env.Config.Server.Admins =
+        [
+            new Config.AdminEntry
+            {
+                Uid = env.Pki.User.Uid,
+                CertFingerprint = Base64Url.Encode(env.Pki.User.Fingerprint()),
+                Role = "admin"
+            }
+        ];
+
+        var result = env.Handler.Process(env.Username, env.ValidPassword("super"), "req-test");
+
+        Assert.Equal("super", result.Role);
+        Assert.True(result.IsSuperuser);
+    }
+
+
+    [Fact]
+    public void Process_AdminEntryWithUndecodableFingerprint_IsIgnored()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Config.Server.Admins =
+        [
+            new Config.AdminEntry
+            {
+                Uid = env.Pki.User.Uid,
+                CertFingerprint = "!!!",
+                Role = "admin"
+            }
+        ];
+
+        var result = env.Handler.Process(env.Username, env.ValidPassword("user"), "req-test");
+
+        Assert.Equal("user", result.Role);
+    }
+
+
+    [Fact]
+    public void Process_ClusterOwnerCertificate_IsSuperuser()
+    {
+        using var env = new AuthTestEnvironment(pki: new TestPkiOptions
+        {
+            UserUid = 7001
+        });
+        var clusterFp = Base64Url.Encode(env.Pki.User.Fingerprint());
+        env.Config.Mqtt.Clusters =
+        [
+            new Config.MqttConfig.ClusterEntry
+            {
+                Uid = 7001,
+                Callsign = "BG0CLU",
+                MqttHost = "cluster.example.test",
+                MqttPort = 2883,
+                CertFingerprint = clusterFp
+            }
+        ];
+
+        var password = env.Pki.BuildPassword(7001, "BG0CLU", 7001,
+            "cluster.example.test", 2883, clusterFp, env.Now, "super");
+
+        var result = env.Handler.Process(env.Username, password, "req-test");
+
+        Assert.Equal("super", result.Role);
+        Assert.True(result.IsSuperuser);
+    }
+
+
     // ---------------------------------------------------------------- deny
 
     [Theory]

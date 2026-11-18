@@ -414,8 +414,8 @@ sas --remove-admin [--config <path>]
 sas --list-admins [--config <path>]
 ```
 
-- **super 角色**由服务器自身 UID 自动决定（`user.uid == server.uid`），无需手动配置
-- 管理员列表仅存储普通管理员（admin 角色），存储在 `config.json` 的 `Server.admins` 数组中
+- **super 角色**由服务器自身的 UID 与证书指纹共同决定（`user.uid == server.uid` 且证书指纹等于 `server.certFingerprint`），无需手动配置
+- 管理员列表仅存储普通管理员（admin 角色），存储在 `config.json` 的 `Server.admins` 数组中；条目按 UID + 证书指纹匹配
 - 可通过 `--config <path>` 指定非默认位置的配置文件
 
 Docker Compose 部署使用运行中的 SAS 容器进行交互式管理：
@@ -443,7 +443,7 @@ sas --list-clusters [--config <path>]
 
 - 集群节点信息存储在 `config.json` 的 `Mqtt.clusters` 数组中
 - 添加后，连接到这些 Broker 的设备也能通过本 SAS 完成认证
-- 集群节点的 UID 所有者在该节点上自动获得 super 角色
+- 集群节点的 UID 与证书指纹同时匹配时，在该节点上获得 super 角色
 
 使用 Docker Compose 部署时，可将其他独立 FMO 服务的公开 MQTT 地址登记到共享的 SAS 配置卷中：
 

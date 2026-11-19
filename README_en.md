@@ -8,7 +8,7 @@
 
 FMO (FM Over Internet) Server Authorizer Service is a standalone device authenticator designed specifically for the amateur radio FMO digital communication network.
 
-It implements fully offline, decentralized device identity verification through a three-layer certificate chain: **Root CA → Intermediate CA → User/Device Certificate**. No real-time authoritative center is required — every amateur radio enthusiast can securely deploy their own server, building a true zero-trust authentication model in the ham radio world.
+It performs device identity verification offline through a three-layer certificate chain: **Root CA → Intermediate CA → User/Device Certificate**. It does not depend on a real-time authoritative center — enthusiasts can deploy their own server, building a self-hosted certificate authentication model in the ham radio world.
 
 ```
 Device ──MQTT CONNECT──▶ EMQX Broker ──POST /auth──▶ SAS
@@ -19,15 +19,15 @@ Device ──MQTT CONNECT──▶ EMQX Broker ──POST /auth──▶ SAS
 
 ## Why Do You Need It?
 
-Traditional digital communication networks (such as D-Star, YSF, etc.) typically rely on centralized authentication servers to verify device identity. This creates several pain points:
+Digital communication networks that rely on a central authentication server typically share a few common challenges:
 
 | Pain Point | Description |
 |------------|-------------|
-| **Single Point of Failure** | Central service goes down → all users locked out |
-| **Ongoing Maintenance** | Requires 24/7 dedicated ops for auth infrastructure |
+| **Single Point of Failure** | When the central service is unavailable, users may be unable to log in |
+| **Ongoing Maintenance** | Requires dedicated staff to keep authentication infrastructure running |
 | **External Dependencies** | Individuals or small groups struggle to build independent trusted networks |
 
-FMO Server Authorizer Service shifts the trust anchor from "a central server on the network" down to "the root certificate in your hands", making decentralized secure authentication a reality.
+FMO Server Authorizer Service shifts the trust anchor from "a central server on the network" down to "the root certificate in your hands", offering a viable path to self-hosted secure authentication.
 
 ## Core Concept: Three-Layer Certificate Chain
 
@@ -43,22 +43,22 @@ Root Certificate (Root CA)
 - **Intermediate Certificate** – Issued by the Root CA, used for day-to-day user and device management, can be periodically rotated or issued per subnet.
 - **User/Device Certificate** – Issued by the Intermediate CA, bound to a specific radio device or operator callsign, used for identity proof on every connection.
 
-The verification process is entirely offline: the authenticator only needs to load root certificates at startup, then independently validates any FMO device's legitimate identity by checking the certificate chain's signatures, validity periods, and revocation status — no online database queries needed.
+The verification process runs locally: the authenticator loads root certificates at startup and validates an FMO device's identity by checking the certificate chain's signatures, validity periods, and revocation status, without querying an online database.
 
-## Zero-Trust Authentication Model
+## Self-Hosted Certificate Authentication
 
-Here "zero-trust" means **"never trust, always verify"**:
+Its basic approach is to **re-verify every connection rather than assume trust**:
 
 - Don't trust network location (whether the request comes from intranet or public internet)
 - Don't trust session state (no "authenticate once, valid forever" tokens)
 - Every connection request must carry a valid device certificate, independently verified by this service
 
-Only devices holding legitimate certificates can establish communication. Security is guaranteed even in partially untrusted network environments.
+Devices that pass verification can establish communication, reducing the risk of unauthorized access even in partially untrusted network environments.
 
 ## Features
 
-- Fully Offline Verification – No internet connection needed, pure local certificate chain validation
-- Zero-Trust Architecture – Every connection is forcibly verified, unauthorized devices cannot connect
+- Offline Verification – Typically no internet connection needed; certificate chain validation runs locally
+- Self-Hosted Authentication – Each connection is verified, reducing unauthorized access
 - Lightweight & Easy to Deploy – Single binary, simple configuration, suitable for embedded or lightweight servers
 - Three-Layer PKI Chain – Root CA → Intermediate CA → User Cert
 - Ed25519 High-Performance Signatures – Modern elliptic curve, secure and fast

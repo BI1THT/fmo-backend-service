@@ -92,13 +92,14 @@ public sealed class RootCaStore
                 }
 
                 var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                var fp = root.FingerprintPrefix();
                 if (root.IsExpired(now))
-                    Logger.Warn($"Root CA expired: sn={root.Sn} name={root.SubjectName} exp={root.Exp}");
+                    Logger.Warn($"Root CA expired: sn={root.Sn} fp={fp} name=\"{LogSafe.Format(root.SubjectName)}\" exp={root.Exp}");
                 if (root.PathLen < 1)
-                    Logger.Warn($"Root CA pathLen invalid: sn={root.Sn} pathLen={root.PathLen}");
+                    Logger.Warn($"Root CA pathLen invalid: sn={root.Sn} fp={fp} pathLen={root.PathLen}");
 
                 _roots.Add(root);
-                Logger.Info($"Loaded Root CA: sn={root.Sn} name={root.SubjectName} keyId={root.KeyId}");
+                Logger.Info($"Loaded Root CA: sn={root.Sn} fp={fp} name=\"{LogSafe.Format(root.SubjectName)}\" keyId={LogSafe.Format(root.KeyId)}");
             }
             catch (Exception ex)
             {
@@ -113,8 +114,12 @@ public sealed class RootCaStore
     {
         foreach (var root in _roots)
         {
-            if (intermediate.VerifyBy(root))
+            if (intermediate.IssuerSn == root.Sn &&
+                intermediate.IssuerPubKey.AsSpan().SequenceEqual(root.SubjectPubKey) &&
+                intermediate.VerifyBy(root))
+            {
                 return root;
+            }
         }
         return null;
     }

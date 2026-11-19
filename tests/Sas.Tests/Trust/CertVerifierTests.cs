@@ -142,6 +142,37 @@ public sealed class CertVerifierTests
     }
 
     [Fact]
+    public void VerifyFullChain_IntermediateIssuerSnMismatch_ReturnsIntermediateIssuerMismatch()
+    {
+        var pki = TestPki.Create(new TestPkiOptions { IntermediateIssuerSn = 999 });
+
+        Assert.Equal(VerifyResult.IntermediateIssuerMismatch,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+    }
+
+    [Fact]
+    public void VerifyFullChain_IntermediateIssuerKeyMismatch_ReturnsIntermediateIssuerKeyMismatch()
+    {
+        var other = TestPki.Create(new TestPkiOptions { Seed = 90 });
+        var pki = TestPki.Create(new TestPkiOptions
+        {
+            IntermediateIssuerPubKey = other.Root.SubjectPubKey
+        });
+
+        Assert.Equal(VerifyResult.IntermediateIssuerKeyMismatch,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+    }
+
+    [Fact]
+    public void VerifyFullChain_UserIssuerSnMismatch_ReturnsUserIssuerMismatch()
+    {
+        var pki = TestPki.Create(new TestPkiOptions { UserIssuerSn = 999 });
+
+        Assert.Equal(VerifyResult.UserIssuerMismatch,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+    }
+
+    [Fact]
     public void VerifyFullChain_ChecksRootExpiryBeforeIntermediateExpiry()
     {
         var pki = TestPki.Create(new TestPkiOptions

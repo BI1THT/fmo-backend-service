@@ -10,6 +10,12 @@ public sealed record TestPkiOptions
 {
     public long RootSn { get; init; } = 1;
     public long IssuerSn { get; init; } = 1001;
+    /// <summary>Overrides the intermediate's issuerSn without changing the signing key.</summary>
+    public long? IntermediateIssuerSn { get; init; }
+    /// <summary>Overrides the intermediate's issuer public key without changing the signing key.</summary>
+    public byte[]? IntermediateIssuerPubKey { get; init; }
+    /// <summary>Overrides the user certificate's issuerSn without changing the signing key.</summary>
+    public long? UserIssuerSn { get; init; }
     public long UserUid { get; init; } = 50001;
     public string UserCallsign { get; init; } = "BG6VMZ";
     public string RootName { get; init; } = "bg5esn";
@@ -66,11 +72,14 @@ public sealed class TestPki
     public static TestPki Create(TestPkiOptions? options = null)
     {
         var o = options ?? new TestPkiOptions();
+        var intermediateIssuerSn = o.IntermediateIssuerSn ?? o.RootSn;
+        var userIssuerSn = o.UserIssuerSn ?? o.IssuerSn;
         var countries = o.IssuingCountries
             .OrderBy(c => c, StringComparer.Ordinal)
             .ToArray();
 
         var rootKeys = KeyPair(o.Seed);
+        var intermediateIssuerPubKey = o.IntermediateIssuerPubKey ?? rootKeys.Public;
         var rootDraft = new RootCaCert
         {
             Sn = o.RootSn,
@@ -106,9 +115,9 @@ public sealed class TestPki
         var interDraft = new IntermediateCaCert
         {
             Sn = o.IssuerSn,
-            IssuerSn = o.RootSn,
+            IssuerSn = intermediateIssuerSn,
             IssuerName = o.RootName,
-            IssuerPubKey = rootKeys.Public,
+            IssuerPubKey = intermediateIssuerPubKey,
             SubjectName = o.IssuerName,
             SubjectEmail = "issuer@example.test",
             SubjectPubKey = interKeys.Public,
@@ -126,9 +135,9 @@ public sealed class TestPki
         var intermediate = new IntermediateCaCert
         {
             Sn = o.IssuerSn,
-            IssuerSn = o.RootSn,
+            IssuerSn = intermediateIssuerSn,
             IssuerName = o.RootName,
-            IssuerPubKey = rootKeys.Public,
+            IssuerPubKey = intermediateIssuerPubKey,
             SubjectName = o.IssuerName,
             SubjectEmail = "issuer@example.test",
             SubjectPubKey = interKeys.Public,
@@ -148,7 +157,7 @@ public sealed class TestPki
         var callsign = o.UserCallsign.ToUpperInvariant();
         var userDraft = new UserCert
         {
-            IssuerSn = o.IssuerSn,
+            IssuerSn = userIssuerSn,
             Callsign = callsign,
             Uid = o.UserUid,
             PublicKey = userKeys.Public,
@@ -158,7 +167,7 @@ public sealed class TestPki
         var userSig = Ed25519.Sign(interKeys.Private, userDraft.ToTbsCbor());
         var user = new UserCert
         {
-            IssuerSn = o.IssuerSn,
+            IssuerSn = userIssuerSn,
             Callsign = callsign,
             Uid = o.UserUid,
             PublicKey = userKeys.Public,

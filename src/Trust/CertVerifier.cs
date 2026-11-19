@@ -17,7 +17,10 @@ public enum VerifyResult
     MissingRootCA = -9,
     MissingIntermediate = -10,
     RootExpired = -11,
-    RootPathLenInvalid = -12
+    RootPathLenInvalid = -12,
+    IntermediateIssuerMismatch = -13,
+    UserIssuerMismatch = -14,
+    IntermediateIssuerKeyMismatch = -15
 }
 
 public sealed class CertVerifier
@@ -77,6 +80,20 @@ public sealed class CertVerifier
         }
         Logger.Debug("  step: intermediate signed by root PASSED");
 
+        if (intermediate.IssuerSn != root.Sn)
+        {
+            Logger.Debug($"  step: intermediate issuerSn mismatch ({intermediate.IssuerSn} != {root.Sn})");
+            return VerifyResult.IntermediateIssuerMismatch;
+        }
+        Logger.Debug("  step: intermediate issuerSn PASSED");
+
+        if (!intermediate.IssuerPubKey.AsSpan().SequenceEqual(root.SubjectPubKey))
+        {
+            Logger.Debug("  step: intermediate issuer publicKey mismatch");
+            return VerifyResult.IntermediateIssuerKeyMismatch;
+        }
+        Logger.Debug("  step: intermediate issuer publicKey PASSED");
+
         if (user.IsExpired(nowUtc))
         {
             Logger.Debug("  step: user expiry FAILED");
@@ -98,6 +115,13 @@ public sealed class CertVerifier
         }
         Logger.Debug("  step: user signed by intermediate PASSED");
 
+        if (user.IssuerSn != intermediate.Sn)
+        {
+            Logger.Debug($"  step: user issuerSn mismatch ({user.IssuerSn} != {intermediate.Sn})");
+            return VerifyResult.UserIssuerMismatch;
+        }
+        Logger.Debug("  step: user issuerSn PASSED");
+
         return VerifyResult.OK;
     }
 
@@ -116,6 +140,9 @@ public sealed class CertVerifier
         VerifyResult.MissingIntermediate => "no matching intermediate CA",
         VerifyResult.RootExpired => "root CA expired",
         VerifyResult.RootPathLenInvalid => "root CA pathLen invalid",
+        VerifyResult.IntermediateIssuerMismatch => "intermediate CA issuer mismatch",
+        VerifyResult.UserIssuerMismatch => "user certificate issuer mismatch",
+        VerifyResult.IntermediateIssuerKeyMismatch => "intermediate CA issuer public key mismatch",
         _ => "unknown error"
     };
 }

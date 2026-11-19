@@ -135,6 +135,68 @@ public sealed class RootCaStoreTests
     }
 
     [Fact]
+    public void FindIssuer_IgnoresIntermediateWithMismatchedIssuerSn()
+    {
+        using var temp = new TempDirectory("roots-issuer-mismatch");
+        var dir = CreateIsolatedRootsDir(temp);
+        var pki = CreatePki();
+        var forged = TestPki.Create(new TestPkiOptions
+        {
+            Seed = 1,
+            RootSn = 1,
+            IssuerSn = 1001,
+            IntermediateIssuerSn = 999
+        });
+        WriteFile(dir, "root.json", pki.RootJson);
+
+        var store = new RootCaStore(dir);
+
+        Assert.Null(store.FindIssuer(forged.Intermediate));
+    }
+
+    [Fact]
+    public void FindIssuer_WithDuplicateRootSn_SelectsByIssuerKeyAndSignature()
+    {
+        using var temp = new TempDirectory("roots-duplicate-sn");
+        var dir = CreateIsolatedRootsDir(temp);
+        var a = TestPki.Create(new TestPkiOptions { Seed = 70, RootSn = 1, RootName = "ca-a" });
+        var b = TestPki.Create(new TestPkiOptions { Seed = 80, RootSn = 1, RootName = "ca-b" });
+        WriteFile(dir, "a.json", a.RootJson);
+        WriteFile(dir, "b.json", b.RootJson);
+
+        var store = new RootCaStore(dir);
+
+        Assert.Equal(2, store.AllRoots.Count);
+        var foundA = store.FindIssuer(a.Intermediate);
+        var foundB = store.FindIssuer(b.Intermediate);
+        Assert.NotNull(foundA);
+        Assert.NotNull(foundB);
+        Assert.Equal(a.Root.SubjectPubKey, foundA!.SubjectPubKey);
+        Assert.Equal(b.Root.SubjectPubKey, foundB!.SubjectPubKey);
+    }
+
+    [Fact]
+    public void FindIssuer_IgnoresIntermediateWithMismatchedIssuerKey()
+    {
+        using var temp = new TempDirectory("roots-issuer-key-mismatch");
+        var dir = CreateIsolatedRootsDir(temp);
+        var pki = CreatePki();
+        var other = TestPki.Create(new TestPkiOptions { Seed = 20 });
+        var forged = TestPki.Create(new TestPkiOptions
+        {
+            Seed = 1,
+            RootSn = 1,
+            IssuerSn = 1001,
+            IntermediateIssuerPubKey = other.Root.SubjectPubKey
+        });
+        WriteFile(dir, "root.json", pki.RootJson);
+
+        var store = new RootCaStore(dir);
+
+        Assert.Null(store.FindIssuer(forged.Intermediate));
+    }
+
+    [Fact]
     public void FindIssuer_MatchesOnlyTheSigningRoot()
     {
         using var temp = new TempDirectory("roots-issuer");

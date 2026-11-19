@@ -12,6 +12,23 @@ public abstract class CertBase
         return System.Security.Cryptography.SHA256.HashData(tbs);
     }
 
+    /// <summary>Lowercase hex form of the certificate's SHA-256 fingerprint.</summary>
+    public string FingerprintHex() => FingerprintHex(Fingerprint());
+
+    /// <summary>Short fingerprint used in logs and cache directory names.</summary>
+    public string FingerprintPrefix(int chars = 8) => HexPrefix(FingerprintHex(), chars);
+
+    /// <summary>Converts a raw fingerprint to the canonical lowercase hex form.</summary>
+    public static string FingerprintHex(byte[] fingerprint) =>
+        Convert.ToHexString(fingerprint).ToLowerInvariant();
+
+    /// <summary>
+    /// Truncates a lowercase hex string for display and returns "?" when the
+    /// value is missing, so callers never print an empty fingerprint.
+    /// </summary>
+    public static string HexPrefix(string? hex, int chars = 8) =>
+        string.IsNullOrEmpty(hex) ? "?" : hex.Length <= chars ? hex : hex[..chars];
+
     protected static void EncodeText(CborWriter w, string s) => w.WriteTextString(s);
 
     protected static void EncodeInt(CborWriter w, long v) => w.WriteInt64(v);

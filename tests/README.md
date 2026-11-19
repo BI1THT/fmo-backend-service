@@ -50,24 +50,27 @@ dotnet tool install dotnet-coverage --tool-path ./.tools
   -f cobertura -o coverage.xml
 ```
 
-## 已知行为（测试按现状锁定，待单独修复）
+## 已修复的已知行为
 
-以下行为已由测试固定，修复时需同步更新相关用例：
+以下历史行为已修复，测试已同步更新：
 
-1. **Root CA 过期不校验**：`RootCaStore` 与 `CertVerifier` 都不检查 `root.exp`。
-2. **`PayloadLength` 以 UTF-16 字符计数**，而协议描述为长度（字节）。
-3. **`LogSafe.Format` 最大输出 `maxLength + 1`**（达到上限后追加 `…`）。
-4. **`CrlNumber` 由 `long` 强转 `uint`**，负值会回绕成 42 亿。
-5. **CRL fail-open**：完全无法获取 CRL 时仍放行（文档只规定了"过期且刷新失败放行"）。
-6. **呼号允许 `/`，归档目录将其替换为 `_`**，目录名与呼号不完全一致。
-7. **非 `/auth` 路径由 `HttpListener` 返回 404**，不会得到 `{"result":"deny"}`。
-8. **`Base64Url.Decode` 忽略空白字符**（`Convert.FromBase64String` 的既有行为），43 字符长度检查不能保证字符集合法。
-9. **内置角色 JSON 与代码兜底默认值漂移**：`src/builtin/roles/*.json` 使用 `FMO/SERVER_INFO/#`，`AclStore.LoadBuiltinDefaults()` 使用 `FMO/SERVER_INFO`。
-10. **归档文件轮转不处理单条超限**：只有已写入过内容（`Bytes > 0`）才会因超限触发轮转。
-11. **归档记录降级只执行一次**：摘要仍超限时不再截断。
+1. **Root CA 过期与 `pathLen`**：`CertVerifier` 现在检查 `root.exp` 和 `root.pathLen`，分别返回 `RootExpired` / `RootPathLenInvalid`。
+2. **长度口径**：`PayloadLength` / `PasswordLength` 统一按 UTF-8 字节计数。
+3. **日志截断**：`LogSafe.Format` 输出严格不超过 `maxLength`，且不会拆开代理对。
+4. **`crlNumber`**：严格限定为 `uint32`，负值或越界直接拒绝，不再回绕。
+5. **CRL 可观测性与 strict**：新增 `NotConfigured` / `NotFetched` / `NotPublished` / `Fresh` / `Stale` / `FetchFailed` 状态；`crl.mode=strict` 时 CRL 不可用即拒绝。
+6. **`Base64Url.Decode`**：严格校验字符集与长度，拒绝空白、padding 和标准 base64 字符。
+7. **内置角色**：以嵌入 JSON 为单一事实来源，代码兜底与 JSON 保持一致。
+8. **归档记录降级**：超限时按 summary → minimal → core 逐级降级，始终输出合法 JSON。
 
-已修复并移除的条目：
+已修复并移除的其他条目：
 
 - 角色判定与协议文档不一致（现为"服务器自身 UID + 指纹 → super；`admins[]` → admin/自定义角色；其他 → user"）。
 - `pathLen` 未参与证书解析（Root 缺失时默认 1，Intermediate 缺失时默认 0，越界值报错）。
+
+## 已澄清的行为（不作为缺陷处理）
+
+1. **呼号 `/` 与归档目录 `_`**：合法呼号字符集为 `A-Z 0-9 / -`，不含 `_`，因此 `/` → `_` 不会产生目录冲突；归档记录中的 `callsign` 保留原始呼号。
+2. **非 `/auth` 路径返回 404**：`HttpListener` 只注册 `/auth/` 前缀，其他路径由监听器直接返回 404；只有 `/auth` 端点内的失败返回 `{"result":"deny"}`。
+3. **归档单条超限不轮转**：单条记录不可拆分；当单条记录大于 `maxFileBytes` 时，文件可能超出上限一条记录的大小，下一条记录会写入新文件。
 

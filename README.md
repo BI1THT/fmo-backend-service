@@ -263,7 +263,7 @@ Body: { "username": "${username}", "password": "${password}" }
     "clusters": [{"uid": 0, "callsign": "", "mqtt_host": "", "mqtt_port": 1883, "certFingerprint": ""}]
   },
   "trust": { "allowIssuerSn": [], "rootsDir": "~/.sas/roots" },
-  "crl": { "refreshSec": 14400 },
+  "crl": { "refreshSec": 14400, "mode": "soft" },
   "http": {
     "addr": "0.0.0.0",
     "port": 8080,
@@ -321,6 +321,7 @@ Body: { "username": "${username}", "password": "${password}" }
 | `--roots-dir` | `trust.rootsDir` | `~/.sas/roots` |
 | `--issuer-sn` | `server.issuerSn` | 0 |
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
+| `--crl-mode` | `crl.mode` | soft |
 | `--log-level` | `log.level` | Info |
 | `--archive-dir` | `archive.dir` | `~/.sas/archive` |
 | `--archive-retention` | `archive.retentionDays` | 30 |
@@ -343,7 +344,7 @@ Body: { "username": "${username}", "password": "${password}" }
 - `username` 最长 32 个 UTF-8 字节，只允许 `A-Z 0-9 / -`，非法请求直接拒绝且不归档；
 - 默认全局限流 600 次/分钟；
 - 同一呼号在证书链校验通过后，5 分钟内失败 20 次会临时封禁 10 分钟；无法证明持有该呼号证书的早期失败只受全局限流约束，避免伪造呼号误伤正常用户；
-- `http.maxPasswordBytes` 限制 password 长度，超长直接拒绝；
+- `http.maxPasswordBytes` 限制 password 的 UTF-8 字节数，超长直接拒绝；
 - 外部字段写入日志前统一转义，避免换行/控制字符注入。
 
 归档按呼号和日期分组，每行是一个独立 JSON 对象：
@@ -355,6 +356,8 @@ Body: { "username": "${username}", "password": "${password}" }
   BD4WPW/
     2026-11-18.jsonl
 ```
+
+目录名使用大写呼号，`/` 替换为 `_`（例如 `BG6VMZ/P` → `BG6VMZ_P`）。合法呼号字符集不含 `_`，因此不会产生目录冲突；记录中的 `callsign` 字段保留原始呼号。
 
 ```json
 {
@@ -390,7 +393,7 @@ Body: { "username": "${username}", "password": "${password}" }
 - 无法解析的畸形请求只写日志，不归档。
 - SAS 不记录来源 IP。需要定位设备真实 IP 时，请在 EMQX 的客户端列表或连接日志中查询。
 - 归档目录在 Linux 上创建为 `0700`，文件为 `0600`。报文不包含私钥，但包含完整证书链和签名，请勿公开分享。
-- `archive.retentionDays` 为保留天数，`archive.maxFileBytes` 为单文件大小上限（超出后追加 `.1`、`.2` 后缀），`archive.maxRecordBytes` 为单条记录上限（超出时自动降级为摘要）。
+- `archive.retentionDays` 为保留天数，`archive.maxFileBytes` 为单文件目标上限（超出后追加 `.1`、`.2` 后缀；单条记录不可拆分，因此文件可能超出上限最多一条记录的大小），`archive.maxRecordBytes` 为单条记录上限（超出时依次降级为摘要、裁剪摘要和核心字段记录，始终输出合法 JSON）。
 - Docker 中归档位于 `sas-data` 卷内；如需按本地日期切分文件，请设置 `TZ`（Compose 默认 `Asia/Shanghai`）。
 
 查看最近的登录记录：
@@ -576,7 +579,7 @@ fmo-server-authorizer-service/
 | `Roots directory not found` | Root CA 未安装，确认内置证书存在 |
 | `Root CA self-signature failed` | 证书文件损坏，重新获取 |
 | `curl` 返回空或拒绝连接 | 检查端口 8080 是否被防火墙阻挡 |
-| CRL 刷新 404 | 正常——CRL URL 暂不可用，不影响服务运行 |
+| CRL 刷新 404 | `soft` 模式下正常，不影响服务运行；`strict` 模式下会拒绝认证，直到 CRL 发布并成功获取 |
 | 认证始终 deny | 检查证书链是否完整、证书是否过期或被吊销；用日志中的 `req` 到归档里查完整报文 |
 | 归档目录为空 | 检查 `archive.enabled`；只有能解析出 password JSON 的请求才会归档 |
 

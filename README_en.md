@@ -251,7 +251,7 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
     "clusters": [{"uid": 0, "callsign": "", "mqtt_host": "", "mqtt_port": 1883, "certFingerprint": ""}]
   },
   "trust": { "allowIssuerSn": [], "rootsDir": "~/.sas/roots" },
-  "crl": { "refreshSec": 14400 },
+  "crl": { "refreshSec": 14400, "mode": "soft" },
   "http": {
     "addr": "0.0.0.0",
     "port": 8080,
@@ -309,6 +309,7 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 | `--roots-dir` | `trust.rootsDir` | `~/.sas/roots` |
 | `--issuer-sn` | `server.issuerSn` | 0 |
 | `--crl-refresh` | `crl.refreshSec` | 14400 |
+| `--crl-mode` | `crl.mode` | soft |
 | `--log-level` | `log.level` | Info |
 | `--archive-dir` | `archive.dir` | `~/.sas/archive` |
 | `--archive-retention` | `archive.retentionDays` | 30 |
@@ -344,6 +345,8 @@ Records are grouped by callsign and day, one JSON object per line:
     2026-11-18.jsonl
 ```
 
+Directory names use the uppercase callsign with `/` replaced by `_` (for example `BG6VMZ/P` → `BG6VMZ_P`). The valid callsign alphabet excludes `_`, so this mapping cannot collide; the record's `callsign` field always keeps the original value.
+
 ```json
 {
   "v": 1,
@@ -378,7 +381,7 @@ Records are grouped by callsign and day, one JSON object per line:
 - Malformed requests that cannot be decoded are only logged, not archived.
 - SAS does not record the source IP. To locate a device's real IP, use the EMQX client list or connection logs.
 - On Linux the archive directory is created as `0700` and files as `0600`. Payloads contain no private keys, but do contain the full certificate chain and signatures — do not share them publicly.
-- `archive.retentionDays` controls retention; `archive.maxFileBytes` caps each file (overflow goes to `.1`, `.2`, ...); `archive.maxRecordBytes` caps each record and falls back to a summary when exceeded.
+- `archive.retentionDays` controls retention; `archive.maxFileBytes` is the target file-size cap (overflow goes to `.1`, `.2`, ...; a single record is never split, so a file may exceed the cap by one record); `archive.maxRecordBytes` caps each record and degrades it to a summary, a trimmed summary, or a core-fields record while always emitting valid JSON.
 - In Docker the archive lives in the `sas-data` volume. Set `TZ` if you want files split by local date (Compose defaults to `Asia/Shanghai`).
 
 Inspect recent records:
@@ -564,7 +567,7 @@ fmo-server-authorizer-service/
 | `Roots directory not found` | Root CA not installed, verify built-in certs exist |
 | `Root CA self-signature failed` | Certificate file corrupted, re-obtain |
 | `curl` returns empty or connection refused | Check if port 8080 is blocked by firewall |
-| CRL refresh 404 | Normal — CRL URL temporarily unavailable, doesn't affect service |
+| CRL refresh 404 | Normal in `soft` mode; in `strict` mode authentication is denied until the CRL is published and fetched |
 | Auth always returns deny | Check certificate chain completeness, expiration, or revocation; use the log `req` ID to find the full payload in the archive |
 | Archive directory is empty | Check `archive.enabled`; only requests whose password JSON can be decoded are archived |
 

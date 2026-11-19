@@ -323,9 +323,11 @@ Every HTTP authentication produces a structured log line. Successful logins stor
 The log shows which Root CA and Intermediate CA issued the user certificate, plus a request ID that links the line to its archive record:
 
 ```text
-[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
-[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootFp=1a2b3c4d rootName=BG5ESN issuerSn=1001 issuerFp=7f8e9d0c issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootFp=1a2b3c4d rootName=BG5ESN issuerSn=1001 issuerFp=7f8e9d0c issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
 ```
+
+`rootFp` / `issuerFp` are the first 8 hex characters of the certificate fingerprint, used to distinguish CAs that share the same SN.
 
 Entry-point protections:
 
@@ -356,8 +358,10 @@ Directory names use the uppercase callsign with `/` replaced by `_` (for example
   "result": "allow",
   "reason": null,
   "rootSn": 1,
+  "rootFp": "1a2b3c4d5e6f7890a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e",
   "rootName": "BG5ESN",
   "issuerSn": 1001,
+  "issuerFp": "7f8e9d0c1b2a34560f1e2d3c4b5a69788697a8b9c0d1e2f30415263748596071",
   "issuerName": "bd4wpw",
   "userUid": 50001,
   "role": "user",
@@ -549,13 +553,19 @@ fmo-server-authorizer-service/
 │   ├── super.json
 │   ├── admin.json
 │   └── user.json
-├── crl/                   ← CRL cache (auto-refreshed)
-│   ├── 1/
-│   └── 1001/
+├── crl/                   ← CRL cache (keyed by certificate fingerprint, auto-refreshed)
+│   ├── root-BG5ESN-1a2b3c4d5e6f7890/
+│   │   ├── root.json
+│   │   └── meta.json
+│   └── intermediate-bd4wpw-7f8e9d0c1b2a3456/
+│       ├── intermediate.json
+│       └── meta.json
 └── archive/               ← Login payload archive (per callsign/day)
     └── BG6VMZ/
         └── 2026-11-18.jsonl
 ```
+
+CRL cache directories are keyed by certificate fingerprint (`{type}-{safeName}-{fp16}`). Legacy `crl/{sn}/` caches are ignored and fetched again. With `crl.mode=strict`, authentication is denied from startup until the first CRL fetch succeeds; watch for `Root CRL updated` in the log, or start in `soft` mode to warm the cache before switching to `strict`.
 
 ---
 

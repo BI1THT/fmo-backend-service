@@ -335,9 +335,11 @@ Body: { "username": "${username}", "password": "${password}" }
 日志中可以看到用户证书链所属的 Root CA 和 Intermediate CA，以及用于关联归档记录的请求 ID：
 
 ```text
-[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
-[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootName=BG5ESN issuerSn=1001 issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
+[INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootFp=1a2b3c4d rootName=BG5ESN issuerSn=1001 issuerFp=7f8e9d0c issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
+[WARN ] HTTP auth: deny callsign=BG6VMZ rootSn=1 rootFp=1a2b3c4d rootName=BG5ESN issuerSn=1001 issuerFp=7f8e9d0c issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=0f9e8d7c6b5a reason="timestamp expired"
 ```
+
+`rootFp` / `issuerFp` 是证书 fingerprint 的前 8 位，用于区分 Sn 相同的不同 CA。
 
 认证入口的安全限制：
 
@@ -368,8 +370,10 @@ Body: { "username": "${username}", "password": "${password}" }
   "result": "allow",
   "reason": null,
   "rootSn": 1,
+  "rootFp": "1a2b3c4d5e6f7890a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e",
   "rootName": "BG5ESN",
   "issuerSn": 1001,
+  "issuerFp": "7f8e9d0c1b2a34560f1e2d3c4b5a69788697a8b9c0d1e2f30415263748596071",
   "issuerName": "bd4wpw",
   "userUid": 50001,
   "role": "user",
@@ -561,13 +565,19 @@ fmo-server-authorizer-service/
 │   ├── super.json
 │   ├── admin.json
 │   └── user.json
-├── crl/                   ← CRL 缓存（自动刷新）
-│   ├── 1/
-│   └── 1001/
+├── crl/                   ← CRL 缓存（按证书指纹，自动刷新）
+│   ├── root-BG5ESN-1a2b3c4d5e6f7890/
+│   │   ├── root.json
+│   │   └── meta.json
+│   └── intermediate-bd4wpw-7f8e9d0c1b2a3456/
+│       ├── intermediate.json
+│       └── meta.json
 └── archive/               ← 登录报文归档（按呼号/日期）
     └── BG6VMZ/
         └── 2026-11-18.jsonl
 ```
+
+`crl/` 下的缓存目录以证书指纹命名（`{type}-{safeName}-{fp16}`）。旧版本的 `crl/{sn}/` 缓存会被忽略并重新拉取。使用 `crl.mode=strict` 时，升级后首次启动到 CRL 拉取完成之间会拒绝认证；建议先观察日志中的 `Root CRL updated`，或临时切到 `soft` 预热后再切回 `strict`。
 
 ---
 

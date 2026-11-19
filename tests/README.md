@@ -62,6 +62,10 @@ dotnet tool install dotnet-coverage --tool-path ./.tools
 6. **`Base64Url.Decode`**：严格校验字符集与长度，拒绝空白、padding 和标准 base64 字符。
 7. **内置角色**：以嵌入 JSON 为单一事实来源，代码兜底与 JSON 保持一致。
 8. **归档记录降级**：超限时按 summary → minimal → core 逐级降级，始终输出合法 JSON。
+9. **跨 CA 吊销**：CRL 查询绑定签发者（`intermediate.Fingerprint()` / `user` 的签发 Intermediate fingerprint），并新增 issuer 一致性检查（`IntermediateIssuerMismatch` / `UserIssuerMismatch`），一个 CA 不能吊销其他 CA 的证书。
+10. **CA Sn 重复**：CRL 缓存和查询改为以证书 fingerprint 为主键，缓存目录为 `{type}-{safeName}-{fp16}`，并在 `meta.json` 保留原始名字、Sn、完整 fingerprint 和 CRL URL；旧 `crl/{sn}/` 缓存会被忽略。
+11. **CA 名字防护**：CRL 缓存目录名使用 CA `subject.name` 的 ASCII 净化结果（空白、控制字符、路径分隔符和 Windows 保留名都会处理）；日志经 `LogSafe` 转义后保留原始名字，`meta.json` 与归档保留原始值。
+12. **IssuerPubKey 校验**：`CertVerifier` 校验 Intermediate 的 `issuer.publicKey` 与 Root 公钥一致，新增 `IntermediateIssuerKeyMismatch`。
 
 已修复并移除的其他条目：
 

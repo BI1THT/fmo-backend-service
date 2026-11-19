@@ -124,12 +124,34 @@ public sealed class CertVerifierTests
     }
 
     [Fact]
-    public void VerifyFullChain_DoesNotCheckRootExpiry_CurrentBehavior()
+    public void VerifyFullChain_ExpiredRoot_ReturnsRootExpired()
     {
-        // Current behaviour: root exp is never evaluated by the verifier.
-        var pki = TestPki.Create(new TestPkiOptions { RootExp = Now - 1 });
+        var pki = TestPki.Create(new TestPkiOptions { RootExp = Now });
 
-        Assert.Equal(VerifyResult.OK, _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+        Assert.Equal(VerifyResult.RootExpired,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+    }
+
+    [Fact]
+    public void VerifyFullChain_RootPathLenZero_ReturnsRootPathLenInvalid()
+    {
+        var pki = TestPki.Create(new TestPkiOptions { RootPathLen = 0 });
+
+        Assert.Equal(VerifyResult.RootPathLenInvalid,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
+    }
+
+    [Fact]
+    public void VerifyFullChain_ChecksRootExpiryBeforeIntermediateExpiry()
+    {
+        var pki = TestPki.Create(new TestPkiOptions
+        {
+            RootExp = Now - 1,
+            IssuerExp = Now - 1
+        });
+
+        Assert.Equal(VerifyResult.RootExpired,
+            _verifier.VerifyFullChain(pki.Root, pki.Intermediate, pki.User, Now));
     }
 
     [Fact]

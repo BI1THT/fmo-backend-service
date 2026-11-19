@@ -15,7 +15,9 @@ public enum VerifyResult
     CountryNotAllowed = -7,
     CertRevoked = -8,
     MissingRootCA = -9,
-    MissingIntermediate = -10
+    MissingIntermediate = -10,
+    RootExpired = -11,
+    RootPathLenInvalid = -12
 }
 
 public sealed class CertVerifier
@@ -32,6 +34,20 @@ public sealed class CertVerifier
             return VerifyResult.RootSelfSignFail;
         }
         Logger.Debug("  step: root self-signature PASSED");
+
+        if (root.IsExpired(nowUtc))
+        {
+            Logger.Debug("  step: root expiry FAILED");
+            return VerifyResult.RootExpired;
+        }
+        Logger.Debug("  step: root expiry PASSED");
+
+        if (root.PathLen < 1)
+        {
+            Logger.Debug($"  step: root pathLen invalid ({root.PathLen})");
+            return VerifyResult.RootPathLenInvalid;
+        }
+        Logger.Debug("  step: root pathLen PASSED");
 
         if (intermediate.IsExpired(nowUtc))
         {
@@ -98,6 +114,8 @@ public sealed class CertVerifier
         VerifyResult.CertRevoked => "certificate revoked",
         VerifyResult.MissingRootCA => "no trusted root CA found",
         VerifyResult.MissingIntermediate => "no matching intermediate CA",
+        VerifyResult.RootExpired => "root CA expired",
+        VerifyResult.RootPathLenInvalid => "root CA pathLen invalid",
         _ => "unknown error"
     };
 }

@@ -21,6 +21,7 @@ public sealed record TestPkiOptions
     public long UidRangeStart { get; init; } = 5000;
     public long UidRangeEnd { get; init; } = 99999;
     public uint PathLen { get; init; } = 0;
+    public uint RootPathLen { get; init; } = 1;
     public string[] IssuingCountries { get; init; } = ["CN"];
     public string RootCrlUrl { get; init; } = "";
     public string IssuerCrlUrl { get; init; } = "";
@@ -77,7 +78,7 @@ public sealed class TestPki
             IssuerEmail = "root@example.test",
             SubjectName = o.RootName,
             SubjectPubKey = rootKeys.Public,
-            PathLen = 1,
+            PathLen = o.RootPathLen,
             Crl = o.RootCrlUrl,
             License = "",
             KeyId = "root-key",
@@ -92,7 +93,7 @@ public sealed class TestPki
             IssuerEmail = "root@example.test",
             SubjectName = o.RootName,
             SubjectPubKey = rootKeys.Public,
-            PathLen = 1,
+            PathLen = o.RootPathLen,
             Crl = o.RootCrlUrl,
             License = "",
             KeyId = "root-key",

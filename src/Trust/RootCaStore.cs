@@ -91,6 +91,12 @@ public sealed class RootCaStore
                     continue;
                 }
 
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                if (root.IsExpired(now))
+                    Logger.Warn($"Root CA expired: sn={root.Sn} name={root.SubjectName} exp={root.Exp}");
+                if (root.PathLen < 1)
+                    Logger.Warn($"Root CA pathLen invalid: sn={root.Sn} pathLen={root.PathLen}");
+
                 _roots.Add(root);
                 Logger.Info($"Loaded Root CA: sn={root.Sn} name={root.SubjectName} keyId={root.KeyId}");
             }

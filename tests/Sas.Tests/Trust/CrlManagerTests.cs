@@ -1,6 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using Sas.certs;
 using Sas.Tests.Fixtures;
 using Sas.Trust;
 
@@ -9,97 +7,6 @@ namespace Sas.Tests.Trust;
 public sealed class CrlManagerTests
 {
     private static byte[] Fingerprint(byte fill) => Enumerable.Repeat(fill, 32).ToArray();
-
-    private static string RootCrlJson(TestPki pki, long crlNumber,
-        IEnumerable<(long Sn, byte[] Fingerprint, long RevokedAt, int Reason)> entries,
-        long nextUpdate = 1_800_000_000)
-    {
-        var array = new JsonArray();
-        foreach (var e in entries)
-        {
-            array.Add(new JsonObject
-            {
-                ["sn"] = e.Sn,
-                ["certFingerprint"] = Base64Url.Encode(e.Fingerprint),
-                ["revokedAt"] = e.RevokedAt,
-                ["reason"] = e.Reason
-            });
-        }
-
-        var draft = new JsonObject
-        {
-            ["type"] = "rootCRL",
-            ["issuerSn"] = pki.Root.Sn,
-            ["crlNumber"] = crlNumber,
-            ["thisUpdate"] = 1_700_000_000,
-            ["nextUpdate"] = nextUpdate,
-            ["entries"] = array,
-            ["signature"] = Base64Url.Encode(new byte[64])
-        };
-
-        var unsigned = RootCrl.FromJson(JsonDocument.Parse(draft.ToJsonString()).RootElement);
-        var signature = Ed25519.Sign(pki.RootPrivateKey, unsigned.ToTbsCbor());
-        draft["signature"] = Base64Url.Encode(signature);
-
-        return draft.ToJsonString();
-    }
-
-    private static string IntermediateCrlJson(TestPki pki, long crlNumber,
-        IEnumerable<(long Uid, byte[] Fingerprint, long RevokedAt, int Reason)> entries,
-        long nextUpdate = 1_800_000_000)
-    {
-        var array = new JsonArray();
-        foreach (var e in entries)
-        {
-            array.Add(new JsonObject
-            {
-                ["uid"] = e.Uid,
-                ["certFingerprint"] = Base64Url.Encode(e.Fingerprint),
-                ["revokedAt"] = e.RevokedAt,
-                ["reason"] = e.Reason
-            });
-        }
-
-        var draft = new JsonObject
-        {
-            ["type"] = "intermediateCRL",
-            ["issuerSn"] = pki.Intermediate.Sn,
-            ["crlNumber"] = crlNumber,
-            ["thisUpdate"] = 1_700_000_000,
-            ["nextUpdate"] = nextUpdate,
-            ["entries"] = array,
-            ["signature"] = Base64Url.Encode(new byte[64])
-        };
-
-        var unsigned = IntermediateCrl.FromJson(JsonDocument.Parse(draft.ToJsonString()).RootElement);
-        var signature = Ed25519.Sign(pki.IntermediatePrivateKey, unsigned.ToTbsCbor());
-        draft["signature"] = Base64Url.Encode(signature);
-
-        return draft.ToJsonString();
-    }
-
-    private static string RootCacheDirectory(TempDirectory temp, RootCaCert root) =>
-        Path.Combine(temp.Path, "crl",
-            CrlManager.CacheDirectoryName("root", root.SubjectName, root.Fingerprint()));
-
-    private static string IntermediateCacheDirectory(TempDirectory temp, IntermediateCaCert intermediate) =>
-        Path.Combine(temp.Path, "crl",
-            CrlManager.CacheDirectoryName("intermediate", intermediate.SubjectName, intermediate.Fingerprint()));
-
-    private static void WriteRootCache(TempDirectory temp, RootCaCert root, string json)
-    {
-        var dir = RootCacheDirectory(temp, root);
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, "root.json"), json);
-    }
-
-    private static void WriteIntermediateCache(
-        TempDirectory temp, IntermediateCaCert intermediate, string json)
-    {
-        var dir = IntermediateCacheDirectory(temp, intermediate);
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, "intermediate.json"), json);
-    }
 
     [Fact]
     public void Initialize_WithRefreshDisabled_DoesNotFetch()
@@ -131,7 +38,7 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
-        WriteRootCache(temp, pki.Root, RootCrlJson(pki, 5, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteRootCache(temp, pki.Root, TestCrl.RootCrlJson(pki, 5, [], nextUpdate: 1_700_000_100));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
 
         manager.Initialize([pki.Root]);
@@ -146,7 +53,7 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
         var other = TestPki.Create(new TestPkiOptions { Seed = 50 });
-        WriteRootCache(temp, pki.Root, RootCrlJson(other, 5, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteRootCache(temp, pki.Root, TestCrl.RootCrlJson(other, 5, [], nextUpdate: 1_700_000_100));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
 
         manager.Initialize([pki.Root]);
@@ -159,7 +66,7 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
-        WriteRootCache(temp, pki.Root, "{not json");
+        TestCrl.WriteRootCache(temp, pki.Root, "{not json");
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
 
         manager.Initialize([pki.Root]);
@@ -173,8 +80,8 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
         var revokedFp = pki.Intermediate.Fingerprint();
-        WriteRootCache(temp, pki.Root,
-            RootCrlJson(pki, 1, [(pki.Intermediate.Sn, revokedFp, 1_700_000_000, 1)]));
+        TestCrl.WriteRootCache(temp, pki.Root,
+            TestCrl.RootCrlJson(pki, 1, [(pki.Intermediate.Sn, revokedFp, 1_700_000_000, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -193,9 +100,9 @@ public sealed class CrlManagerTests
 
         // Root A's CRL maliciously lists root B's intermediate. Root B's own
         // CRL is empty.
-        WriteRootCache(temp, a.Root,
-            RootCrlJson(a, 1, [(b.Intermediate.Sn, bFp, 1_700_000_000, 1)]));
-        WriteRootCache(temp, b.Root, RootCrlJson(b, 1, []));
+        TestCrl.WriteRootCache(temp, a.Root,
+            TestCrl.RootCrlJson(a, 1, [(b.Intermediate.Sn, bFp, 1_700_000_000, 1)]));
+        TestCrl.WriteRootCache(temp, b.Root, TestCrl.RootCrlJson(b, 1, []));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -231,9 +138,9 @@ public sealed class CrlManagerTests
         var bUserFp = b.User.Fingerprint();
 
         // Intermediate A's CRL maliciously lists a user issued by B.
-        WriteIntermediateCache(temp, a.Intermediate,
-            IntermediateCrlJson(a, 1, [(b.User.Uid, bUserFp, 1_700_000_000, 1)]));
-        WriteIntermediateCache(temp, b.Intermediate, IntermediateCrlJson(b, 1, []));
+        TestCrl.WriteIntermediateCache(temp, a.Intermediate,
+            TestCrl.IntermediateCrlJson(a, 1, [(b.User.Uid, bUserFp, 1_700_000_000, 1)]));
+        TestCrl.WriteIntermediateCache(temp, b.Intermediate, TestCrl.IntermediateCrlJson(b, 1, []));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -255,8 +162,8 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
         var revokedFp = pki.User.Fingerprint();
-        WriteIntermediateCache(temp, pki.Intermediate,
-            IntermediateCrlJson(pki, 1, [(pki.User.Uid, revokedFp, 1_700_000_000, 1)]));
+        TestCrl.WriteIntermediateCache(temp, pki.Intermediate,
+            TestCrl.IntermediateCrlJson(pki, 1, [(pki.User.Uid, revokedFp, 1_700_000_000, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -273,8 +180,8 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
         var userFp = pki.User.Fingerprint();
-        WriteRootCache(temp, pki.Root,
-            RootCrlJson(pki, 1, [(pki.User.Uid, userFp, 1_700_000_000, 1)]));
+        TestCrl.WriteRootCache(temp, pki.Root,
+            TestCrl.RootCrlJson(pki, 1, [(pki.User.Uid, userFp, 1_700_000_000, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -300,7 +207,7 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
-        var http = FakeHttpMessageHandler.Json(IntermediateCrlJson(pki, 2, []));
+        var http = FakeHttpMessageHandler.Json(TestCrl.IntermediateCrlJson(pki, 2, []));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1, http.CreateClient());
         manager.Initialize([pki.Root]);
 
@@ -314,9 +221,9 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
-        WriteIntermediateCache(temp, pki.Intermediate,
-            IntermediateCrlJson(pki, 1, [(pki.User.Uid, pki.User.Fingerprint(), 1, 1)]));
-        var http = FakeHttpMessageHandler.Json(IntermediateCrlJson(pki, 2, []));
+        TestCrl.WriteIntermediateCache(temp, pki.Intermediate,
+            TestCrl.IntermediateCrlJson(pki, 1, [(pki.User.Uid, pki.User.Fingerprint(), 1, 1)]));
+        var http = FakeHttpMessageHandler.Json(TestCrl.IntermediateCrlJson(pki, 2, []));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1, http.CreateClient());
         manager.Initialize([pki.Root]);
 
@@ -331,7 +238,7 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create();
-        WriteRootCache(temp, pki.Root, RootCrlJson(pki, 3, [], nextUpdate: 1_700_003_600));
+        TestCrl.WriteRootCache(temp, pki.Root, TestCrl.RootCrlJson(pki, 3, [], nextUpdate: 1_700_003_600));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -379,7 +286,7 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
-        WriteRootCache(temp, pki.Root, RootCrlJson(pki, 3, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteRootCache(temp, pki.Root, TestCrl.RootCrlJson(pki, 3, [], nextUpdate: 1_700_000_100));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -409,7 +316,7 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
         var other = TestPki.Create(new TestPkiOptions { Seed = 60 });
-        var http = FakeHttpMessageHandler.Json(RootCrlJson(other, 3, []));
+        var http = FakeHttpMessageHandler.Json(TestCrl.RootCrlJson(other, 3, []));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
         manager.Initialize([pki.Root]);
 
@@ -437,8 +344,8 @@ public sealed class CrlManagerTests
     {
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
-        WriteIntermediateCache(temp, pki.Intermediate,
-            IntermediateCrlJson(pki, 1, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteIntermediateCache(temp, pki.Intermediate,
+            TestCrl.IntermediateCrlJson(pki, 1, [], nextUpdate: 1_700_000_100));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
@@ -481,9 +388,9 @@ public sealed class CrlManagerTests
         var b = TestPki.Create(new TestPkiOptions { Seed = 80, RootSn = 1, IssuerSn = 222 });
         var bFp = b.Intermediate.Fingerprint();
 
-        WriteRootCache(temp, a.Root,
-            RootCrlJson(a, 1, [(b.Intermediate.Sn, bFp, 1_700_000_000, 1)]));
-        WriteRootCache(temp, b.Root, RootCrlJson(b, 1, []));
+        TestCrl.WriteRootCache(temp, a.Root,
+            TestCrl.RootCrlJson(a, 1, [(b.Intermediate.Sn, bFp, 1_700_000_000, 1)]));
+        TestCrl.WriteRootCache(temp, b.Root, TestCrl.RootCrlJson(b, 1, []));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -493,8 +400,8 @@ public sealed class CrlManagerTests
         Assert.True(manager.IsIntermediateRevoked(
             a.Root.Fingerprint(), b.Intermediate.Sn, bFp, out _));
 
-        var aDir = RootCacheDirectory(temp, a.Root);
-        var bDir = RootCacheDirectory(temp, b.Root);
+        var aDir = TestCrl.RootCacheDirectory(temp, a.Root);
+        var bDir = TestCrl.RootCacheDirectory(temp, b.Root);
         Assert.True(Directory.Exists(aDir));
         Assert.True(Directory.Exists(bDir));
         Assert.NotEqual(aDir, bDir);
@@ -517,10 +424,10 @@ public sealed class CrlManagerTests
             RootCrlUrl = "http://crl.test/b.crl"
         });
 
-        WriteRootCache(temp, a.Root,
-            RootCrlJson(a, 1, [], nextUpdate: 1_700_000_100));
-        WriteRootCache(temp, b.Root,
-            RootCrlJson(b, 2, [], nextUpdate: 1_800_000_000));
+        TestCrl.WriteRootCache(temp, a.Root,
+            TestCrl.RootCrlJson(a, 1, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteRootCache(temp, b.Root,
+            TestCrl.RootCrlJson(b, 2, [], nextUpdate: 1_800_000_000));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -551,9 +458,9 @@ public sealed class CrlManagerTests
         });
         var bUserFp = b.User.Fingerprint();
 
-        WriteIntermediateCache(temp, a.Intermediate,
-            IntermediateCrlJson(a, 1, [(b.User.Uid, bUserFp, 1_700_000_000, 1)]));
-        WriteIntermediateCache(temp, b.Intermediate, IntermediateCrlJson(b, 1, []));
+        TestCrl.WriteIntermediateCache(temp, a.Intermediate,
+            TestCrl.IntermediateCrlJson(a, 1, [(b.User.Uid, bUserFp, 1_700_000_000, 1)]));
+        TestCrl.WriteIntermediateCache(temp, b.Intermediate, TestCrl.IntermediateCrlJson(b, 1, []));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -585,10 +492,10 @@ public sealed class CrlManagerTests
             IssuerCrlUrl = "http://crl.test/b.crl"
         });
 
-        WriteIntermediateCache(temp, a.Intermediate,
-            IntermediateCrlJson(a, 1, [], nextUpdate: 1_700_000_100));
-        WriteIntermediateCache(temp, b.Intermediate,
-            IntermediateCrlJson(b, 2, [], nextUpdate: 1_800_000_000));
+        TestCrl.WriteIntermediateCache(temp, a.Intermediate,
+            TestCrl.IntermediateCrlJson(a, 1, [], nextUpdate: 1_700_000_100));
+        TestCrl.WriteIntermediateCache(temp, b.Intermediate,
+            TestCrl.IntermediateCrlJson(b, 2, [], nextUpdate: 1_800_000_000));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([a.Root, b.Root]);
@@ -610,7 +517,7 @@ public sealed class CrlManagerTests
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
         var legacyDir = temp.CreateSubdirectory("crl", pki.Root.Sn.ToString());
         File.WriteAllText(Path.Combine(legacyDir, "root.json"),
-            RootCrlJson(pki, 5, [], nextUpdate: 1_800_000_000));
+            TestCrl.RootCrlJson(pki, 5, [], nextUpdate: 1_800_000_000));
 
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
@@ -632,7 +539,7 @@ public sealed class CrlManagerTests
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
         manager.Initialize([pki.Root]);
 
-        var metaPath = Path.Combine(RootCacheDirectory(temp, pki.Root), "meta.json");
+        var metaPath = Path.Combine(TestCrl.RootCacheDirectory(temp, pki.Root), "meta.json");
         Assert.True(File.Exists(metaPath));
 
         using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
@@ -663,7 +570,7 @@ public sealed class CrlManagerTests
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
         var revokedFp = pki.Intermediate.Fingerprint();
         var http = FakeHttpMessageHandler.Json(
-            RootCrlJson(pki, 7, [(pki.Intermediate.Sn, revokedFp, 1_700_000_000, 1)]));
+            TestCrl.RootCrlJson(pki, 7, [(pki.Intermediate.Sn, revokedFp, 1_700_000_000, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
 
         manager.Initialize([pki.Root]);
@@ -671,7 +578,7 @@ public sealed class CrlManagerTests
         Assert.True(SpinWait.SpinUntil(
             () => manager.IsIntermediateRevoked(pki.Root.Fingerprint(), pki.Intermediate.Sn, revokedFp, out _),
             TimeSpan.FromSeconds(3)));
-        Assert.True(File.Exists(Path.Combine(RootCacheDirectory(temp, pki.Root), "root.json")));
+        Assert.True(File.Exists(Path.Combine(TestCrl.RootCacheDirectory(temp, pki.Root), "root.json")));
     }
 
     [Fact]
@@ -685,7 +592,7 @@ public sealed class CrlManagerTests
         manager.Initialize([pki.Root]);
 
         Assert.True(SpinWait.SpinUntil(() => http.CallCount >= 1, TimeSpan.FromSeconds(3)));
-        Assert.False(File.Exists(Path.Combine(RootCacheDirectory(temp, pki.Root), "root.json")));
+        Assert.False(File.Exists(Path.Combine(TestCrl.RootCacheDirectory(temp, pki.Root), "root.json")));
     }
 
     [Fact]
@@ -694,13 +601,13 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
         var other = TestPki.Create(new TestPkiOptions { Seed = 60 });
-        var http = FakeHttpMessageHandler.Json(RootCrlJson(other, 3, []));
+        var http = FakeHttpMessageHandler.Json(TestCrl.RootCrlJson(other, 3, []));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
 
         manager.Initialize([pki.Root]);
 
         Assert.True(SpinWait.SpinUntil(() => http.CallCount >= 1, TimeSpan.FromSeconds(3)));
-        Assert.False(File.Exists(Path.Combine(RootCacheDirectory(temp, pki.Root), "root.json")));
+        Assert.False(File.Exists(Path.Combine(TestCrl.RootCacheDirectory(temp, pki.Root), "root.json")));
     }
 
     [Fact]
@@ -709,9 +616,9 @@ public sealed class CrlManagerTests
         using var temp = new TempDirectory("crl");
         var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
         var userFp = pki.User.Fingerprint();
-        WriteRootCache(temp, pki.Root, RootCrlJson(pki, 9, []));
+        TestCrl.WriteRootCache(temp, pki.Root, TestCrl.RootCrlJson(pki, 9, []));
         var http = FakeHttpMessageHandler.Json(
-            RootCrlJson(pki, 1, [(pki.User.Uid, userFp, 1, 1)]));
+            TestCrl.RootCrlJson(pki, 1, [(pki.User.Uid, userFp, 1, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
 
         manager.Initialize([pki.Root]);
@@ -728,7 +635,7 @@ public sealed class CrlManagerTests
         var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
         var userFp = pki.User.Fingerprint();
         var http = FakeHttpMessageHandler.Json(
-            IntermediateCrlJson(pki, 4, [(pki.User.Uid, userFp, 1_700_000_000, 1)]));
+            TestCrl.IntermediateCrlJson(pki, 4, [(pki.User.Uid, userFp, 1_700_000_000, 1)]));
         using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1, http.CreateClient());
         manager.Initialize([pki.Root]);
 
@@ -738,6 +645,6 @@ public sealed class CrlManagerTests
             () => manager.IsUserRevoked(pki.Intermediate.Fingerprint(), pki.User.Uid, userFp, out _),
             TimeSpan.FromSeconds(3)));
         Assert.True(File.Exists(Path.Combine(
-            IntermediateCacheDirectory(temp, pki.Intermediate), "intermediate.json")));
+            TestCrl.IntermediateCacheDirectory(temp, pki.Intermediate), "intermediate.json")));
     }
 }

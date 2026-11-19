@@ -17,6 +17,14 @@ internal sealed class AuthTestEnvironment : IDisposable
     public Config Config { get; }
     public FixedTimeProvider Clock { get; }
     public FakeCrlPolicy Crl { get; } = new();
+
+    /// <summary>
+    /// The policy actually handed to <see cref="Handler"/>. Defaults to
+    /// <see cref="Crl"/>; pass <c>crlFactory</c> to wire the real
+    /// <see cref="CrlManager"/> with a real on-disk cache.
+    /// </summary>
+    public ICrlPolicy CrlPolicy { get; }
+
     public RootCaStore RootStore { get; }
     public AclStore Acl { get; }
     public AuthArchive Archive { get; }
@@ -26,7 +34,8 @@ internal sealed class AuthTestEnvironment : IDisposable
     public AuthTestEnvironment(
         Action<Config>? configure = null,
         TestPkiOptions? pki = null,
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        Func<string, ICrlPolicy>? crlFactory = null)
     {
         Temp = new TempDirectory("auth");
         Pki = TestPki.Create(pki);
@@ -42,9 +51,10 @@ internal sealed class AuthTestEnvironment : IDisposable
         configure?.Invoke(Config);
 
         RootStore = new RootCaStore(rootsDir);
+        CrlPolicy = crlFactory?.Invoke(rootsDir) ?? Crl;
         Acl = new AclStore(Temp.CreateSubdirectory("roles"));
         Archive = new AuthArchive(Config.Archive, Clock);
-        Handler = new HttpAuthHandler(Config, RootStore, new CertVerifier(), Crl, Acl, Archive, Clock, new Random(12345));
+        Handler = new HttpAuthHandler(Config, RootStore, new CertVerifier(), CrlPolicy, Acl, Archive, Clock, new Random(12345));
     }
 
     public long Now => Clock.GetUtcNow().ToUnixTimeSeconds();
@@ -80,6 +90,8 @@ internal sealed class AuthTestEnvironment : IDisposable
     public void Dispose()
     {
         Archive.Flush();
+        if (CrlPolicy is IDisposable disposable)
+            disposable.Dispose();
         Temp.Dispose();
     }
 }

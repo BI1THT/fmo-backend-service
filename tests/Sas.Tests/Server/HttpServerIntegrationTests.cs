@@ -4,6 +4,7 @@ using System.Text.Json;
 using Sas.Auth;
 using Sas.Server;
 using Sas.Tests.Fixtures;
+using Sas.Trust;
 
 namespace Sas.Tests.Server;
 
@@ -184,6 +185,32 @@ public sealed class HttpServerIntegrationTests
 
         var response = await client.PostAsync("auth", Body(env.Username, env.ValidPassword()));
 
+        Assert.Equal("deny", (await ReadJson(response)).GetProperty("result").GetString());
+    }
+
+    [Fact]
+    public async Task Post_UserRevokedByIntermediateCrl_ReturnsDeny()
+    {
+        using var env = new AuthTestEnvironment(
+            pki: new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" },
+            crlFactory: rootsDir => new CrlManager(rootsDir, refreshSec: -1,
+                FakeHttpMessageHandler.NotFound().CreateClient()));
+        var crl = (CrlManager)env.CrlPolicy;
+
+        TestCrl.WriteIntermediateCache(env.Temp, env.Pki.Intermediate,
+            TestCrl.IntermediateCrlJson(env.Pki, 1,
+            [
+                (env.Pki.User.Uid, env.Pki.User.Fingerprint(),
+                    1_700_000_000, TestCrl.ReasonKeyCompromise)
+            ]));
+        crl.Initialize([env.Pki.Root]);
+
+        await using var server = new HttpServerHarness(env.Handler, new EmqxResponseTemplate(), UnlimitedLimiter());
+        using var client = server.CreateClient();
+
+        var response = await client.PostAsync("auth", Body(env.Username, env.ValidPassword()));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("deny", (await ReadJson(response)).GetProperty("result").GetString());
     }
 

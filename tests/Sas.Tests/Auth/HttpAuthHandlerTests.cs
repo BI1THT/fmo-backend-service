@@ -718,12 +718,9 @@ public sealed class HttpAuthHandlerTests
         env.ProcessValid();
 
         var record = SingleRecord(env);
-        Assert.Equal(Hex(env.Pki.Root.Fingerprint()), record.GetProperty("rootFp").GetString());
-        Assert.Equal(Hex(env.Pki.Intermediate.Fingerprint()), record.GetProperty("issuerFp").GetString());
+        Assert.Equal(CertBase.FingerprintHex(env.Pki.Root.Fingerprint()), record.GetProperty("rootFp").GetString());
+        Assert.Equal(CertBase.FingerprintHex(env.Pki.Intermediate.Fingerprint()), record.GetProperty("issuerFp").GetString());
     }
-
-    private static string Hex(byte[] bytes) =>
-        Convert.ToHexString(bytes).ToLowerInvariant();
 
     [Fact]
     public void Process_DenyWithDecodablePayload_WritesSummary()

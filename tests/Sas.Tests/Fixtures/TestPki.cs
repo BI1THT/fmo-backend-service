@@ -72,21 +72,34 @@ public sealed class TestPki
     public static TestPki Create(TestPkiOptions? options = null)
     {
         var o = options ?? new TestPkiOptions();
-        var intermediateIssuerSn = o.IntermediateIssuerSn ?? o.RootSn;
-        var userIssuerSn = o.UserIssuerSn ?? o.IssuerSn;
-        var countries = o.IssuingCountries
-            .OrderBy(c => c, StringComparer.Ordinal)
-            .ToArray();
-
         var rootKeys = KeyPair(o.Seed);
-        var intermediateIssuerPubKey = o.IntermediateIssuerPubKey ?? rootKeys.Public;
-        var rootDraft = new RootCaCert
+        var root = BuildRoot(o, rootKeys.Public, rootKeys.Private);
+
+        return BuildChain(root, rootKeys.Private, o);
+    }
+
+    /// <summary>
+    /// Builds another Intermediate/User chain below <paramref name="rootChain"/>.
+    /// Used by tests that need two CAs sharing one Root (for example to prove
+    /// that one Intermediate CRL cannot revoke another Intermediate's users).
+    /// </summary>
+    public static TestPki CreateWithRoot(TestPki rootChain, TestPkiOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(rootChain);
+        var o = options ?? new TestPkiOptions();
+        return BuildChain(rootChain.Root, rootChain.RootPrivateKey, o);
+    }
+
+    private static RootCaCert BuildRoot(
+        TestPkiOptions o, byte[] publicKey, byte[] privateKey)
+    {
+        var draft = new RootCaCert
         {
             Sn = o.RootSn,
             IssuerName = o.RootName,
             IssuerEmail = "root@example.test",
             SubjectName = o.RootName,
-            SubjectPubKey = rootKeys.Public,
+            SubjectPubKey = publicKey,
             PathLen = o.RootPathLen,
             Crl = o.RootCrlUrl,
             License = "",
@@ -94,29 +107,41 @@ public sealed class TestPki
             Iat = o.Iat,
             Exp = o.RootExp
         };
-        var rootSig = Ed25519.Sign(rootKeys.Private, rootDraft.ToTbsCbor());
-        var root = new RootCaCert
+        var signature = Ed25519.Sign(privateKey, draft.ToTbsCbor());
+
+        return new RootCaCert
         {
             Sn = o.RootSn,
             IssuerName = o.RootName,
             IssuerEmail = "root@example.test",
             SubjectName = o.RootName,
-            SubjectPubKey = rootKeys.Public,
+            SubjectPubKey = publicKey,
             PathLen = o.RootPathLen,
             Crl = o.RootCrlUrl,
             License = "",
             KeyId = "root-key",
             Iat = o.Iat,
             Exp = o.RootExp,
-            Signature = rootSig
+            Signature = signature
         };
+    }
+
+    private static TestPki BuildChain(
+        RootCaCert root, byte[] rootPrivateKey, TestPkiOptions o)
+    {
+        var intermediateIssuerSn = o.IntermediateIssuerSn ?? root.Sn;
+        var userIssuerSn = o.UserIssuerSn ?? o.IssuerSn;
+        var countries = o.IssuingCountries
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .ToArray();
+        var intermediateIssuerPubKey = o.IntermediateIssuerPubKey ?? root.SubjectPubKey;
 
         var interKeys = KeyPair((byte)(o.Seed + 1));
         var interDraft = new IntermediateCaCert
         {
             Sn = o.IssuerSn,
             IssuerSn = intermediateIssuerSn,
-            IssuerName = o.RootName,
+            IssuerName = root.SubjectName,
             IssuerPubKey = intermediateIssuerPubKey,
             SubjectName = o.IssuerName,
             SubjectEmail = "issuer@example.test",
@@ -131,12 +156,12 @@ public sealed class TestPki
             Iat = o.Iat,
             Exp = o.IssuerExp
         };
-        var interSig = Ed25519.Sign(rootKeys.Private, interDraft.ToTbsCbor());
+        var interSig = Ed25519.Sign(rootPrivateKey, interDraft.ToTbsCbor());
         var intermediate = new IntermediateCaCert
         {
             Sn = o.IssuerSn,
             IssuerSn = intermediateIssuerSn,
-            IssuerName = o.RootName,
+            IssuerName = root.SubjectName,
             IssuerPubKey = intermediateIssuerPubKey,
             SubjectName = o.IssuerName,
             SubjectEmail = "issuer@example.test",
@@ -176,12 +201,12 @@ public sealed class TestPki
             Signature = userSig
         };
 
-        var rootJson = SerializeRoot(root, rootKeys.Public, rootSig);
+        var rootJson = SerializeRoot(root, root.SubjectPubKey, root.Signature);
         var interJson = SerializeIntermediate(intermediate, countries, interSig);
         var userJson = SerializeUser(user, userSig);
 
         return new TestPki(root, intermediate, user,
-            rootKeys.Private, interKeys.Private, userKeys.Private,
+            rootPrivateKey, interKeys.Private, userKeys.Private,
             rootJson, interJson, userJson);
     }
 

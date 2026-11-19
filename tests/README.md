@@ -28,8 +28,9 @@ dotnet test tests/Sas.Tests/Sas.Tests.csproj --filter "Category=Integration"
 
 ## 测试夹具
 
-- `TestPki`：用真实 Ed25519 密钥生成完整的 Root → Intermediate → User 证书链，并构造符合协议 12 元 CBOR 的 proof 签名。
-- `AuthTestEnvironment`：组合真实 `RootCaStore`、`AclStore`、`AuthArchive` 和 `HttpAuthHandler`，只替换时钟、随机数和吊销策略。
+- `TestPki`：用真实 Ed25519 密钥生成完整的 Root → Intermediate → User 证书链，并构造符合协议 12 元 CBOR 的 proof 签名。`CreateWithRoot` 可在同一个 Root 下再生成一条 Intermediate/User 链，用于验证 CRL 的签发者绑定。
+- `TestCrl`：生成真实签名的 Root/Intermediate CRL JSON，并按生产缓存布局写入 `crl/{type}-{safeName}-{fp16}/`，供 `CrlManagerTests` 和登录联动测试共用。
+- `AuthTestEnvironment`：组合真实 `RootCaStore`、`AclStore`、`AuthArchive` 和 `HttpAuthHandler`，只替换时钟、随机数和吊销策略。传入 `crlFactory` 可注入真实 `CrlManager`，走真实缓存、验签和 fingerprint 查询。
 - `FixedTimeProvider`：可控时钟，用于限流窗口、熔断时长、证书过期与 timestamp 漂移。
 - `TempDirectory`：所有 IO 都在系统临时目录内，测试结束清理。
 
@@ -77,4 +78,5 @@ dotnet tool install dotnet-coverage --tool-path ./.tools
 1. **呼号 `/` 与归档目录 `_`**：合法呼号字符集为 `A-Z 0-9 / -`，不含 `_`，因此 `/` → `_` 不会产生目录冲突；归档记录中的 `callsign` 保留原始呼号。
 2. **非 `/auth` 路径返回 404**：`HttpListener` 只注册 `/auth/` 前缀，其他路径由监听器直接返回 404；只有 `/auth` 端点内的失败返回 `{"result":"deny"}`。
 3. **归档单条超限不轮转**：单条记录不可拆分；当单条记录大于 `maxFileBytes` 时，文件可能超出上限一条记录的大小，下一条记录会写入新文件。
+4. **soft 模式冷缓存首次放行**：Intermediate CRL 尚未缓存时，`RegisterIntermediate` 启动后台拉取，本次登录继续按"未命中"处理；soft 模式会放行，strict 模式会以 `CRL unavailable` 拒绝。`HttpAuthHandlerCrlTests` 已固化这两种行为，生产环境需要严格吊销保证时应使用 `crl.mode=strict`。
 

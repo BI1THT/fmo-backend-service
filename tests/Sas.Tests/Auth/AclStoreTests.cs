@@ -121,6 +121,36 @@ public sealed class AclStoreTests
     }
 
     [Fact]
+    public void HardcodedDefaults_MatchEmbeddedRoleJson()
+    {
+        using var temp = new TempDirectory("acl-embedded");
+        var store = new AclStore(temp.CreateSubdirectory("roles"));
+
+        var embedded = new[]
+        {
+            store.GetPermissions("super"),
+            store.GetPermissions("admin"),
+            store.GetPermissions("user")
+        };
+
+        store.LoadHardcodedDefaults();
+
+        var hardcoded = new[]
+        {
+            store.GetPermissions("super"),
+            store.GetPermissions("admin"),
+            store.GetPermissions("user")
+        };
+
+        for (var i = 0; i < embedded.Length; i++)
+        {
+            Assert.Equal(embedded[i].all, hardcoded[i].all);
+            Assert.Equal(embedded[i].pub, hardcoded[i].pub);
+            Assert.Equal(embedded[i].sub, hardcoded[i].sub);
+        }
+    }
+
+    [Fact]
     public void SeededBuiltinRoles_MatchBuiltinJsonFiles()
     {
         using var temp = new TempDirectory("acl-seeded");

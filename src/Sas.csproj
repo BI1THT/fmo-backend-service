@@ -31,6 +31,9 @@
     <Content Include="builtin\roles\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <EmbeddedResource Include="builtin\roles\*.json">
+      <LogicalName>builtin.roles.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>

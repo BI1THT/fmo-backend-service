@@ -87,11 +87,56 @@ public sealed class AclStore
 
     private void LoadBuiltinDefaults()
     {
+        // Prefer the embedded JSON so the built-in roles have a single source
+        // of truth. The hardcoded copy only exists for builds where the
+        // embedded resources are missing.
+        if (TryLoadEmbeddedDefaults())
+            return;
+
+        LoadHardcodedDefaults();
+    }
+
+    private bool TryLoadEmbeddedDefaults()
+    {
+        var assembly = typeof(AclStore).Assembly;
+        var loaded = false;
+
+        foreach (var name in assembly.GetManifestResourceNames()
+                     .Where(n => n.StartsWith("builtin.roles.", StringComparison.Ordinal)))
+        {
+            try
+            {
+                using var stream = assembly.GetManifestResourceStream(name);
+                if (stream == null)
+                    continue;
+
+                using var reader = new StreamReader(stream);
+                var acl = JsonSerializer.Deserialize<RoleAcl>(reader.ReadToEnd(),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                if (acl == null || string.IsNullOrEmpty(acl.Role))
+                    continue;
+
+                _roles[acl.Role] = acl;
+                loaded = true;
+                Logger.Info($"Loaded built-in role: {acl.Role} ({name})");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to load embedded role {name}: {ex.Message}");
+            }
+        }
+
+        return loaded;
+    }
+
+    internal void LoadHardcodedDefaults()
+    {
         _roles["super"] = new RoleAcl
         {
             Role = "super",
             All = ["FMO/RAW", "FMO/TELE", "FMO/USER_RIG"],
-            Pub = ["FMO/QSO/+", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/MUTELIST", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO"],
+            Pub = ["FMO/QSO/+", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/MUTELIST", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO/#"],
             Sub = ["FMO/QSO/UID/{uid}", "FMO/LATE/UID_V1/{uid}"]
         };
         _roles["admin"] = new RoleAcl
@@ -99,12 +144,12 @@ public sealed class AclStore
             Role = "admin",
             All = ["FMO/RAW", "FMO/TELE", "FMO/USER_RIG"],
             Pub = ["FMO/QSO/+", "FMO/LATE/UID_V1/{uid}", "FMO/MUTELIST"],
-            Sub = ["FMO/QSO/UID/{uid}", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO"]
+            Sub = ["FMO/QSO/UID/{uid}", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO/#"]
         };
         _roles["user"] = new RoleAcl { Role = "user",
             All = ["FMO/RAW", "FMO/TELE", "FMO/USER_RIG"],
             Pub = ["FMO/QSO/+", "FMO/LATE/UID_V1/{uid}"],
-            Sub = ["FMO/QSO/UID/{uid}", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/MUTELIST", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO"]
+            Sub = ["FMO/QSO/UID/{uid}", "FMO/LATE/UID_V1/{uid}", "FMO/PROFILE", "FMO/MUTELIST", "FMO/REMOTE_CONTROL", "FMO/SERVER_INFO/#"]
         };
     }
 

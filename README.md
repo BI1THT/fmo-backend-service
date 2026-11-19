@@ -579,6 +579,10 @@ fmo-server-authorizer-service/
 
 `crl/` 下的缓存目录以证书指纹命名（`{type}-{safeName}-{fp16}`）。旧版本的 `crl/{sn}/` 缓存会被忽略并重新拉取。使用 `crl.mode=strict` 时，升级后首次启动到 CRL 拉取完成之间会拒绝认证；建议先观察日志中的 `Root CRL updated`，或临时切到 `soft` 预热后再切回 `strict`。
 
+`fp16` 是 SHA-256 fingerprint 的前 16 个 hex 字符（64 bit），与 `safeName` 一起让目录名保持可读。实际部署的 CA 数量很少，碰撞概率可以忽略；即使目录名相同，加载 CRL 时仍会用 `VerifyBy` 验签，签名不匹配的缓存不会被采用，不会把其他 CA 的吊销状态套用过来。
+
+Intermediate 证书只会在登录报文中出现，`CrlManager` 启动时无法预知并拉取所有 Intermediate CRL。`soft` 模式下，某个 Intermediate 第一次出现且本地没有缓存时，当前请求会先放行，同时在后台拉取；后续请求即可命中缓存。需要从第一次请求起就执行吊销检查时，请使用 `crl.mode=strict`，或提前把 CRL 缓存放入对应目录。
+
 ---
 
 ## 故障排查

@@ -567,6 +567,10 @@ fmo-server-authorizer-service/
 
 CRL cache directories are keyed by certificate fingerprint (`{type}-{safeName}-{fp16}`). Legacy `crl/{sn}/` caches are ignored and fetched again. With `crl.mode=strict`, authentication is denied from startup until the first CRL fetch succeeds; watch for `Root CRL updated` in the log, or start in `soft` mode to warm the cache before switching to `strict`.
 
+`fp16` is the first 16 hex characters (64 bits) of the SHA-256 fingerprint and only keeps directory names readable alongside `safeName`. Real deployments have very few CAs, so collisions can be ignored; even if two directories collide, every CRL is still verified with `VerifyBy` before use, so a mismatched cache is never trusted and one CA's revocation state cannot leak into another.
+
+Intermediate certificates only appear in login payloads, so `CrlManager` cannot know or prefetch all Intermediate CRLs at startup. In `soft` mode, the first request that introduces an Intermediate with no local cache is allowed while the CRL is fetched in the background; later requests hit the cache. Use `crl.mode=strict`, or pre-populate the cache directory, when revocation must be enforced from the very first request.
+
 ---
 
 ## Troubleshooting

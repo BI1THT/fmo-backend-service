@@ -75,6 +75,13 @@ internal sealed class Config
     public sealed class CrlConfig
     {
         public int RefreshSec { get; set; } = 14400;
+
+        /// <summary>
+        /// "soft" keeps the documented fail-soft behaviour; "strict" denies
+        /// authentication whenever a required CRL is missing, stale or cannot
+        /// be fetched.
+        /// </summary>
+        public string Mode { get; set; } = "soft";
     }
 
     public sealed class LogConfig
@@ -949,6 +956,13 @@ internal sealed class Config
             Logger.Flush();
             Environment.Exit(1);
         }
+
+        if (cfg.Crl.Mode is not ("soft" or "strict"))
+        {
+            Logger.Error($"crl.mode 必须为 soft 或 strict / crl.mode must be soft or strict: {cfg.Crl.Mode}");
+            Logger.Flush();
+            Environment.Exit(1);
+        }
     }
 
     internal static void ShowHelp()
@@ -987,6 +1001,7 @@ internal sealed class Config
         Console.WriteLine("  --allow-issuer-sn <str>                  签发者白名单，逗号分隔 / Issuer SN whitelist (default: 全部信任)");
         Console.WriteLine("  --issuer-sn <long>                       服务器 CA 序列号 / Server issuer SN");
         Console.WriteLine("  --crl-refresh <int>                      CRL 刷新间隔（秒）/ CRL refresh interval (default: 14400)");
+        Console.WriteLine("  --crl-mode <soft|strict>                 CRL 策略 / CRL policy (default: soft)");
         Console.WriteLine("  --roots-dir <path>                       Root CA 证书目录 / Root CA directory (default: ~/.sas/roots)");
         Console.WriteLine("  --log-level <str>                        日志级别 / Log level: Debug/Info/Warn/Error (default: Info)");
         Console.WriteLine("  --archive-dir <path>                     登录报文归档目录 / Login archive directory (default: ~/.sas/archive)");

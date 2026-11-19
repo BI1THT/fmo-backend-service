@@ -274,6 +274,106 @@ public sealed class CrlManagerTests
     }
 
     [Fact]
+    public void GetRootCrlAvailability_NoCrlUrl_IsNotConfigured()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create();
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
+        manager.Initialize([pki.Root]);
+
+        Assert.Equal(CrlAvailability.NotConfigured,
+            manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_000));
+    }
+
+    [Fact]
+    public void GetRootCrlAvailability_UrlWithoutCrl_IsNotFetched()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
+        manager.Initialize([pki.Root]);
+
+        Assert.Equal(CrlAvailability.NotFetched,
+            manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_000));
+    }
+
+    [Fact]
+    public void GetRootCrlAvailability_CachedCrl_IsFreshThenStale()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
+        WriteRootCache(temp, pki.Root.Sn, RootCrlJson(pki, 3, [], nextUpdate: 1_700_000_100));
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
+        manager.Initialize([pki.Root]);
+
+        Assert.Equal(CrlAvailability.Fresh,
+            manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_000));
+        Assert.Equal(CrlAvailability.Stale,
+            manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_101));
+    }
+
+    [Fact]
+    public void GetRootCrlAvailability_When404_IsNotPublished()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
+        var http = FakeHttpMessageHandler.NotFound();
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
+        manager.Initialize([pki.Root]);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_000) == CrlAvailability.NotPublished,
+            TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void GetRootCrlAvailability_WhenSignatureInvalid_IsFetchFailed()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create(new TestPkiOptions { RootCrlUrl = "http://crl.test/root.crl" });
+        var other = TestPki.Create(new TestPkiOptions { Seed = 60 });
+        var http = FakeHttpMessageHandler.Json(RootCrlJson(other, 3, []));
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: 3600, http.CreateClient());
+        manager.Initialize([pki.Root]);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => manager.GetRootCrlAvailability(pki.Root.Sn, 1_700_000_000) == CrlAvailability.FetchFailed,
+            TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public void GetIntermediateCrlAvailability_NoCrlUrl_IsNotConfigured()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create();
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
+        manager.Initialize([pki.Root]);
+
+        manager.RegisterIntermediate(pki.Intermediate);
+
+        Assert.Equal(CrlAvailability.NotConfigured,
+            manager.GetIntermediateCrlAvailability(pki.Intermediate.Sn, 1_700_000_000));
+    }
+
+    [Fact]
+    public void GetIntermediateCrlAvailability_CachedCrl_IsFreshThenStale()
+    {
+        using var temp = new TempDirectory("crl");
+        var pki = TestPki.Create(new TestPkiOptions { IssuerCrlUrl = "http://crl.test/int.crl" });
+        WriteIntermediateCache(temp, pki.Intermediate.Sn,
+            IntermediateCrlJson(pki, 1, [], nextUpdate: 1_700_000_100));
+        using var manager = new CrlManager(temp.CreateSubdirectory("roots"), refreshSec: -1);
+        manager.Initialize([pki.Root]);
+
+        manager.RegisterIntermediate(pki.Intermediate);
+
+        Assert.Equal(CrlAvailability.Fresh,
+            manager.GetIntermediateCrlAvailability(pki.Intermediate.Sn, 1_700_000_000));
+        Assert.Equal(CrlAvailability.Stale,
+            manager.GetIntermediateCrlAvailability(pki.Intermediate.Sn, 1_700_000_101));
+    }
+
+    [Fact]
     public void Dispose_IsIdempotent()
     {
         using var temp = new TempDirectory("crl");

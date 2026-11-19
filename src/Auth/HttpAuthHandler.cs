@@ -173,6 +173,25 @@ internal sealed class HttpAuthHandler : IAuthHandler
 
         _crlManager.RegisterIntermediate(intermediate);
 
+        var rootCrlAvailability = _crlManager.GetRootCrlAvailability(root.Sn, now);
+        var intermediateCrlAvailability =
+            _crlManager.GetIntermediateCrlAvailability(intermediate.Sn, now);
+
+        if (_config.Crl.Mode == "strict" &&
+            (rootCrlAvailability is not CrlAvailability.Fresh ||
+             intermediateCrlAvailability is not CrlAvailability.Fresh))
+        {
+            throw Deny(ctx,
+                $"CRL unavailable: root={rootCrlAvailability} intermediate={intermediateCrlAvailability}");
+        }
+
+        if (rootCrlAvailability != CrlAvailability.Fresh ||
+            intermediateCrlAvailability != CrlAvailability.Fresh)
+        {
+            Logger.Debug($"HTTP auth: CRL not fresh root={rootCrlAvailability} " +
+                         $"intermediate={intermediateCrlAvailability} req={requestId}");
+        }
+
         var rootOutdated = _crlManager.IsRootCrlOutdated(root.Sn, now);
         if (rootOutdated)
         {

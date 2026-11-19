@@ -12,7 +12,7 @@ internal static class ConfigParser
     {
         "--server-uid", "--server-callsign", "--mqtt-host", "--mqtt-port",
         "--cert-fingerprint", "--issuer-sn", "--allow-issuer-sn", "--roots-dir",
-        "--crl-refresh", "--http-port", "--http-addr", "--http-ttl", "--log-level",
+        "--crl-refresh", "--crl-mode", "--http-port", "--http-addr", "--http-ttl", "--log-level",
         "--archive-dir", "--archive-retention"
     };
 
@@ -100,6 +100,9 @@ internal static class ConfigParser
                 case "--crl-refresh" when i + 1 < flatArgs.Count:
                     config.Crl.RefreshSec = int.Parse(flatArgs[++i]);
                     break;
+                case "--crl-mode" when i + 1 < flatArgs.Count:
+                    config.Crl.Mode = flatArgs[++i];
+                    break;
                 case "--log-level" when i + 1 < flatArgs.Count:
                     config.Log.Level = flatArgs[++i];
                     break;
@@ -158,6 +161,9 @@ internal static class ConfigParser
                     break;
                 case "--crl-refresh" when i + 1 < flatArgs.Count:
                     config.Crl.RefreshSec = int.Parse(flatArgs[++i]);
+                    break;
+                case "--crl-mode" when i + 1 < flatArgs.Count:
+                    config.Crl.Mode = flatArgs[++i];
                     break;
                 case "--log-level" when i + 1 < flatArgs.Count:
                     config.Log.Level = flatArgs[++i];

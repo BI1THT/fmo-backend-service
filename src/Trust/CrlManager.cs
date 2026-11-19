@@ -18,6 +18,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
     private readonly ConcurrentDictionary<long, IntermediateCrl> _intermediateCrls = new();
     private readonly ConcurrentDictionary<long, IntermediateCaCert> _knownIntermediates = new();
     private readonly ConcurrentDictionary<long, Task> _pendingFetches = new();
+    private readonly ConcurrentDictionary<long, CrlAvailability> _rootState = new();
+    private readonly ConcurrentDictionary<long, CrlAvailability> _intermediateState = new();
 
     private Timer? _timer;
     private int _refreshing;
@@ -33,6 +35,14 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
     public void Initialize(RootCaCert[] roots)
     {
         _roots = roots;
+
+        foreach (var root in roots)
+        {
+            _rootState[root.Sn] = string.IsNullOrWhiteSpace(root.Crl)
+                ? CrlAvailability.NotConfigured
+                : CrlAvailability.NotFetched;
+        }
+
         LoadCachedCrls();
 
         if (_refreshSec <= 0)
@@ -53,13 +63,19 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
 
     public void RegisterIntermediate(IntermediateCaCert intermediate)
     {
-        if (string.IsNullOrWhiteSpace(intermediate.Crl))
-            return;
-
         _knownIntermediates.TryAdd(intermediate.Sn, intermediate);
 
-        if (_intermediateCrls.ContainsKey(intermediate.Sn))
+        if (string.IsNullOrWhiteSpace(intermediate.Crl))
+        {
+            SetIntermediateState(intermediate.Sn, CrlAvailability.NotConfigured);
             return;
+        }
+
+        if (_intermediateCrls.ContainsKey(intermediate.Sn))
+        {
+            SetIntermediateState(intermediate.Sn, CrlAvailability.Fresh);
+            return;
+        }
 
         var cachePath = GetIntermediateCachePath(intermediate.Sn);
         if (File.Exists(cachePath))
@@ -74,6 +90,7 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 if (crl.VerifyBy(intermediate) && crl.IssuerSn == intermediate.Sn)
                 {
                     _intermediateCrls.TryAdd(intermediate.Sn, crl);
+                    SetIntermediateState(intermediate.Sn, CrlAvailability.Fresh);
                     Logger.Info($"Loaded cached intermediate CRL: issuerSn={intermediate.Sn} crlNumber={crl.CrlNumber}");
                     return;
                 }
@@ -136,6 +153,52 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
         return false;
     }
 
+    public CrlAvailability GetRootCrlAvailability(long rootSn, long nowUtc)
+    {
+        var root = _roots.FirstOrDefault(r => r.Sn == rootSn);
+        if (root == null || string.IsNullOrWhiteSpace(root.Crl))
+            return CrlAvailability.NotConfigured;
+
+        if (_rootCrls.TryGetValue(rootSn, out var crl))
+            return crl.IsOutdated(nowUtc) ? CrlAvailability.Stale : CrlAvailability.Fresh;
+
+        return _rootState.GetValueOrDefault(rootSn, CrlAvailability.NotFetched);
+    }
+
+    public CrlAvailability GetIntermediateCrlAvailability(long intermediateSn, long nowUtc)
+    {
+        if (!_knownIntermediates.TryGetValue(intermediateSn, out var intermediate) ||
+            string.IsNullOrWhiteSpace(intermediate.Crl))
+        {
+            return CrlAvailability.NotConfigured;
+        }
+
+        if (_intermediateCrls.TryGetValue(intermediateSn, out var crl))
+            return crl.IsOutdated(nowUtc) ? CrlAvailability.Stale : CrlAvailability.Fresh;
+
+        return _intermediateState.GetValueOrDefault(intermediateSn, CrlAvailability.NotFetched);
+    }
+
+    private void SetRootState(long sn, CrlAvailability state)
+    {
+        if (_rootState.TryGetValue(sn, out var previous) && previous == state)
+            return;
+
+        _rootState[sn] = state;
+        if (state == CrlAvailability.FetchFailed)
+            Logger.Warn($"Root CRL unavailable: sn={sn} (fetch failed)");
+    }
+
+    private void SetIntermediateState(long sn, CrlAvailability state)
+    {
+        if (_intermediateState.TryGetValue(sn, out var previous) && previous == state)
+            return;
+
+        _intermediateState[sn] = state;
+        if (state == CrlAvailability.FetchFailed)
+            Logger.Warn($"Intermediate CRL unavailable: sn={sn} (fetch failed)");
+    }
+
     public void Dispose()
     {
         _timer?.Dispose();
@@ -183,6 +246,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!doc.TryGetProperty("issuerSn", out _) || !doc.TryGetProperty("entries", out _))
             {
                 Logger.Info($"Root CRL not published yet: {root.Crl}");
+                if (!_rootCrls.ContainsKey(root.Sn))
+                    SetRootState(root.Sn, CrlAvailability.NotPublished);
                 return;
             }
 
@@ -191,12 +256,16 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!crl.VerifyBy(root))
             {
                 Logger.Error($"Root CRL signature invalid: {root.Crl}");
+                if (!_rootCrls.ContainsKey(root.Sn))
+                    SetRootState(root.Sn, CrlAvailability.FetchFailed);
                 return;
             }
 
             if (crl.IssuerSn != root.Sn)
             {
                 Logger.Error($"Root CRL issuerSn mismatch: crl.issuerSn={crl.IssuerSn} root.sn={root.Sn}");
+                if (!_rootCrls.ContainsKey(root.Sn))
+                    SetRootState(root.Sn, CrlAvailability.FetchFailed);
                 return;
             }
 
@@ -214,14 +283,20 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 SaveCachedRootCrl(root.Sn, json);
                 Logger.Info($"Root CRL updated: sn={root.Sn} crlNumber={crl.CrlNumber}");
             }
+
+            SetRootState(root.Sn, CrlAvailability.Fresh);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             Logger.Info($"No root CRL available for {root.Crl} (404 Not Found)");
+            if (!_rootCrls.ContainsKey(root.Sn))
+                SetRootState(root.Sn, CrlAvailability.NotPublished);
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to refresh root CRL ({root.Crl}): {ex.Message}");
+            if (!_rootCrls.ContainsKey(root.Sn))
+                SetRootState(root.Sn, CrlAvailability.FetchFailed);
         }
     }
 
@@ -238,6 +313,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!doc.TryGetProperty("issuerSn", out _) || !doc.TryGetProperty("entries", out _))
             {
                 Logger.Info($"Intermediate CRL not published yet: {issuer.Crl}");
+                if (!_intermediateCrls.ContainsKey(issuer.Sn))
+                    SetIntermediateState(issuer.Sn, CrlAvailability.NotPublished);
                 return;
             }
 
@@ -246,12 +323,16 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!crl.VerifyBy(issuer))
             {
                 Logger.Error($"Intermediate CRL signature invalid: {issuer.Crl}");
+                if (!_intermediateCrls.ContainsKey(issuer.Sn))
+                    SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
                 return;
             }
 
             if (crl.IssuerSn != issuer.Sn)
             {
                 Logger.Error($"Intermediate CRL issuerSn mismatch: crl.issuerSn={crl.IssuerSn} issuer.sn={issuer.Sn}");
+                if (!_intermediateCrls.ContainsKey(issuer.Sn))
+                    SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
                 return;
             }
 
@@ -269,14 +350,20 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 SaveCachedIntermediateCrl(issuer.Sn, json);
                 Logger.Info($"Intermediate CRL loaded: issuerSn={issuer.Sn} crlNumber={crl.CrlNumber}");
             }
+
+            SetIntermediateState(issuer.Sn, CrlAvailability.Fresh);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             Logger.Info($"No intermediate CRL available for {issuer.Crl} (404 Not Found)");
+            if (!_intermediateCrls.ContainsKey(issuer.Sn))
+                SetIntermediateState(issuer.Sn, CrlAvailability.NotPublished);
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to refresh intermediate CRL ({issuer.Crl}): {ex.Message}");
+            if (!_intermediateCrls.ContainsKey(issuer.Sn))
+                SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
         }
     }
 
@@ -300,6 +387,7 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 if (crl.VerifyBy(root) && crl.IssuerSn == root.Sn)
                 {
                     _rootCrls.TryAdd(root.Sn, crl);
+                    SetRootState(root.Sn, CrlAvailability.Fresh);
                     Logger.Info($"Loaded cached root CRL: sn={root.Sn} crlNumber={crl.CrlNumber}");
                 }
             }

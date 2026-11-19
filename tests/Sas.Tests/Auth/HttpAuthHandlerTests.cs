@@ -508,6 +508,46 @@ public sealed class HttpAuthHandlerTests
     }
 
     [Fact]
+    public void Process_StrictCrlWithMissingRootCrl_Denies()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Config.Crl.Mode = "strict";
+        env.Crl.RootAvailability = CrlAvailability.NotFetched;
+
+        var ex = Deny(env);
+
+        Assert.Contains("CRL unavailable", ex.Message);
+        Assert.Contains("root=NotFetched", ex.Message);
+        Assert.Equal(env.Pki.User.Callsign, ex.BreakerKey);
+    }
+
+    [Fact]
+    public void Process_StrictCrlWithStaleIntermediateCrl_Denies()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Config.Crl.Mode = "strict";
+        env.Crl.IntermediateAvailability = CrlAvailability.Stale;
+
+        var ex = Deny(env);
+
+        Assert.Contains("CRL unavailable", ex.Message);
+        Assert.Contains("intermediate=Stale", ex.Message);
+    }
+
+    [Fact]
+    public void Process_SoftCrlWithMissingCrls_Allows()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Config.Crl.Mode = "soft";
+        env.Crl.RootAvailability = CrlAvailability.NotFetched;
+        env.Crl.IntermediateAvailability = CrlAvailability.NotConfigured;
+
+        var result = env.ProcessValid();
+
+        Assert.Equal("user", result.Role);
+    }
+
+    [Fact]
     public void Process_RevokedIntermediate_Denies()
     {
         using var env = new AuthTestEnvironment();

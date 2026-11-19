@@ -9,6 +9,8 @@ namespace Sas.Tests.Fixtures;
 public sealed class FakeCrlPolicy : ICrlPolicy
 {
     public bool RootCrlOutdated { get; set; }
+    public CrlAvailability RootAvailability { get; set; } = CrlAvailability.Fresh;
+    public CrlAvailability IntermediateAvailability { get; set; } = CrlAvailability.Fresh;
     public List<IntermediateCaCert> Registered { get; } = [];
     public HashSet<string> RevokedIntermediates { get; } = new(StringComparer.Ordinal);
     public HashSet<string> RevokedUsers { get; } = new(StringComparer.Ordinal);
@@ -16,6 +18,11 @@ public sealed class FakeCrlPolicy : ICrlPolicy
     public void RegisterIntermediate(IntermediateCaCert intermediate) => Registered.Add(intermediate);
 
     public bool IsRootCrlOutdated(long rootSn, long nowUtc) => RootCrlOutdated;
+
+    public CrlAvailability GetRootCrlAvailability(long rootSn, long nowUtc) => RootAvailability;
+
+    public CrlAvailability GetIntermediateCrlAvailability(long intermediateSn, long nowUtc) =>
+        IntermediateAvailability;
 
     public bool IsIntermediateRevoked(long sn, byte[] fingerprint, out string? reason)
     {

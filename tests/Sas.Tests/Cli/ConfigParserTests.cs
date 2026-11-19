@@ -150,6 +150,7 @@ public class ConfigParserTests
             "--allow-issuer-sn", "1001,2001",
             "--roots-dir", "/data/roots",
             "--crl-refresh", "600",
+            "--crl-mode", "strict",
             "--log-level", "Debug",
             "--http-port", "9090",
             "--http-addr", "127.0.0.1",
@@ -170,6 +171,7 @@ public class ConfigParserTests
         Assert.Equal("/data/roots", config.Trust.RootsDir);
 
         Assert.Equal(600, config.Crl.RefreshSec);
+        Assert.Equal("strict", config.Crl.Mode);
         Assert.Equal("Debug", config.Log.Level);
 
         Assert.Equal(9090, config.Http.Port);

@@ -20,4 +20,20 @@ internal static class CertJsonFields
 
         return (uint)value;
     }
+
+    /// <summary>
+    /// Reads crlNumber as a uint32. Negative or larger values are rejected
+    /// instead of silently wrapping around.
+    /// </summary>
+    public static uint ReadCrlNumber(JsonElement json)
+    {
+        var element = json.GetProperty("crlNumber");
+        if (!element.TryGetInt64(out var value))
+            throw new FormatException("crlNumber must be an integer");
+
+        if (value < 0 || value > uint.MaxValue)
+            throw new FormatException($"crlNumber out of range: {value}");
+
+        return (uint)value;
+    }
 }

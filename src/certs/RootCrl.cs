@@ -30,7 +30,7 @@ public sealed class RootCrl
         return new RootCrl
         {
             IssuerSn = json.GetProperty("issuerSn").GetInt64(),
-            CrlNumber = (uint)json.GetProperty("crlNumber").GetInt64(),
+            CrlNumber = CertJsonFields.ReadCrlNumber(json),
             ThisUpdate = json.GetProperty("thisUpdate").GetInt64(),
             NextUpdate = json.GetProperty("nextUpdate").GetInt64(),
             Entries = entries,

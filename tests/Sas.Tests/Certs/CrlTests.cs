@@ -141,13 +141,23 @@ public sealed class RootCrlTests
         Assert.Equal(expected, crl.IsOutdated(now));
     }
 
-    [Fact]
-    public void CrlNumber_NegativeValue_WrapsToUInt32()
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(1L)]
+    [InlineData((long)uint.MaxValue)]
+    public void CrlNumber_AcceptsUInt32Range(long value)
     {
-        // Current behaviour: long -> uint is an unchecked cast.
-        var crl = Parse(BuildJson(1, -1, []));
+        var crl = Parse(BuildJson(1, value, []));
 
-        Assert.Equal(uint.MaxValue, crl.CrlNumber);
+        Assert.Equal((uint)value, crl.CrlNumber);
+    }
+
+    [Theory]
+    [InlineData(-1L)]
+    [InlineData((long)uint.MaxValue + 1)]
+    public void CrlNumber_OutOfRange_Throws(long value)
+    {
+        Assert.Throws<FormatException>(() => Parse(BuildJson(1, value, [])));
     }
 }
 
@@ -268,5 +278,13 @@ public sealed class IntermediateCrlTests
         var crl = Parse(BuildJson(1001, 1, [], nextUpdate: 1_700_003_600));
 
         Assert.Equal(expected, crl.IsOutdated(now));
+    }
+
+    [Theory]
+    [InlineData(-1L)]
+    [InlineData((long)uint.MaxValue + 1)]
+    public void CrlNumber_OutOfRange_Throws(long value)
+    {
+        Assert.Throws<FormatException>(() => Parse(BuildJson(1001, value, [])));
     }
 }

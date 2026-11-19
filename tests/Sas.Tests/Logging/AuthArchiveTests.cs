@@ -143,6 +143,37 @@ public sealed class AuthArchiveTests
     }
 
     [Fact]
+    public void OversizedSummary_IsStoredAsMinimalRecord()
+    {
+        using var temp = new TempDirectory("archive-minimal");
+        var dir = temp.Combine("archive");
+        var clock = new FixedTimeProvider(BaseTime);
+        var archive = new AuthArchive(
+            CreateConfig(dir, c => c.MaxRecordBytes = 600),
+            clock);
+
+        var record = CreateRecord(result: "deny", password: new string('p', 500)) with
+        {
+            TargetUrl = "https://" + new string('u', 2000),
+            ClaimedRole = new string('r', 200)
+        };
+
+        archive.Write(record);
+        archive.Flush();
+
+        var file = ArchiveFile(dir, "BG6VMZ", clock);
+        var raw = File.ReadAllText(file).TrimEnd('\n');
+        Assert.True(Encoding.UTF8.GetByteCount(raw) <= 600);
+
+        var stored = Assert.Single(ArchiveProbe.ReadRecords(dir));
+        Assert.Null(stored.Password);
+        Assert.Null(stored.Payload);
+        Assert.Equal("BG6VMZ", stored.Callsign);
+        Assert.Equal("deny", stored.Result);
+        Assert.Equal(500, stored.PasswordLength);
+    }
+
+    [Fact]
     public void FileSizeLimit_RotatesToSuffixedFile()
     {
         using var temp = new TempDirectory("archive-file-limit");

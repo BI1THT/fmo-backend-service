@@ -175,18 +175,7 @@ public sealed class AuthArchive : IArchiveSink
             _writers[key] = state;
         }
 
-        var line = JsonSerializer.Serialize(record, JsonOptions);
-
-        if (_config.MaxRecordBytes > 0 &&
-            Encoding.UTF8.GetByteCount(line) > _config.MaxRecordBytes)
-        {
-            var summary = record with { Password = null, Payload = null };
-            line = JsonSerializer.Serialize(summary, JsonOptions);
-
-            if (Interlocked.Exchange(ref _truncateLogged, 1) == 0)
-                Logger.Warn($"Auth archive: record exceeded {_config.MaxRecordBytes} bytes, storing summary only");
-        }
-
+        var line = SerializeForLimit(record);
         var bytes = Encoding.UTF8.GetByteCount(line) + 1;
 
         if (_config.MaxFileBytes > 0 &&
@@ -202,6 +191,96 @@ public sealed class AuthArchive : IArchiveSink
         state.Writer.WriteLine(line);
         state.Writer.Flush();
         state.Bytes += bytes;
+    }
+
+    /// <summary>
+    /// Serializes a record and degrades it step by step until it fits
+    /// <see cref="ArchiveConfig.MaxRecordBytes"/>. Every step still produces
+    /// valid JSON so the archive remains line-parseable.
+    /// </summary>
+    private string SerializeForLimit(AuthArchiveRecord record)
+    {
+        var line = JsonSerializer.Serialize(record, JsonOptions);
+        if (!ExceedsRecordLimit(line))
+            return line;
+
+        var summary = record with { Password = null, Payload = null };
+        line = JsonSerializer.Serialize(summary, JsonOptions);
+        if (!ExceedsRecordLimit(line))
+        {
+            LogTruncation("summary");
+            return line;
+        }
+
+        var minimal = summary with
+        {
+            Reason = TruncateField(summary.Reason, 200),
+            TargetCallsign = TruncateField(summary.TargetCallsign, 64),
+            TargetUrl = TruncateField(summary.TargetUrl, 256),
+            ClaimedRole = TruncateField(summary.ClaimedRole, 32),
+            RootName = TruncateField(summary.RootName, 64),
+            IssuerName = TruncateField(summary.IssuerName, 64)
+        };
+        line = JsonSerializer.Serialize(minimal, JsonOptions);
+        if (!ExceedsRecordLimit(line))
+        {
+            LogTruncation("minimal");
+            return line;
+        }
+
+        var core = new AuthArchiveRecord
+        {
+            Ts = minimal.Ts,
+            RequestId = minimal.RequestId,
+            Callsign = minimal.Callsign,
+            Result = minimal.Result,
+            Reason = TruncateField(minimal.Reason, 128),
+            PasswordLength = minimal.PasswordLength,
+            PasswordSha256 = minimal.PasswordSha256,
+            PayloadLength = minimal.PayloadLength,
+            PayloadSha256 = minimal.PayloadSha256
+        };
+        line = JsonSerializer.Serialize(core, JsonOptions);
+        LogTruncation("core");
+        return line;
+    }
+
+    private bool ExceedsRecordLimit(string line) =>
+        _config.MaxRecordBytes > 0 &&
+        Encoding.UTF8.GetByteCount(line) > _config.MaxRecordBytes;
+
+    private void LogTruncation(string level)
+    {
+        if (Interlocked.Exchange(ref _truncateLogged, 1) == 0)
+        {
+            Logger.Warn(
+                $"Auth archive: record exceeded {_config.MaxRecordBytes} bytes, storing {level} record");
+        }
+    }
+
+    private static string? TruncateField(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        var count = 0;
+        foreach (var _ in value.EnumerateRunes())
+            count++;
+
+        if (count <= max)
+            return value;
+
+        var sb = new StringBuilder(max);
+        var taken = 0;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (taken++ >= max - 1)
+                break;
+            sb.Append(rune.ToString());
+        }
+
+        sb.Append('…');
+        return sb.ToString();
     }
 
     private static WriterState OpenWriter(string dir, string date, bool rotate = false)

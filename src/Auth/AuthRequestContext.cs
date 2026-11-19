@@ -18,6 +18,7 @@ public sealed class AuthRequestContext
         Callsign = username;
         PasswordRaw = password;
         RequestId = requestId;
+        PasswordLength = Encoding.UTF8.GetByteCount(password);
         PasswordHash = Hash(password);
     }
 
@@ -25,13 +26,13 @@ public sealed class AuthRequestContext
     public string Username { get; }
     public string Callsign { get; set; }
     public string PasswordRaw { get; }
-    public int PasswordLength => PasswordRaw.Length;
+    public int PasswordLength { get; }
     public string PasswordHash { get; }
 
     public string? PayloadJson { get; set; }
     public JsonElement? Payload { get; set; }
     public string PayloadHash { get; set; } = "-";
-    public int PayloadLength => PayloadJson?.Length ?? 0;
+    public int PayloadLength { get; private set; }
 
     public long? RootSn { get; set; }
     public string? RootName { get; set; }
@@ -52,6 +53,7 @@ public sealed class AuthRequestContext
         PayloadJson = json;
         Payload = payload;
         PayloadHash = Hash(json);
+        PayloadLength = Encoding.UTF8.GetByteCount(json);
     }
 
     public AuthArchiveRecord ToRecord(string result, string? reason, bool includePayload)

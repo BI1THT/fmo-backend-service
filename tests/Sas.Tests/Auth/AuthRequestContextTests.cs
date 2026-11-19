@@ -45,7 +45,7 @@ public sealed class AuthRequestContextTests
         ctx.SetDecodedPayload(json, doc.RootElement.Clone());
 
         Assert.Equal(json, ctx.PayloadJson);
-        Assert.Equal(json.Length, ctx.PayloadLength);
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(json), ctx.PayloadLength);
         Assert.Equal(AuthRequestContext.Hash(json), ctx.PayloadHash);
         Assert.True(ctx.Payload.HasValue);
         Assert.Equal(5001, ctx.Payload.Value.GetProperty("targetUID").GetInt64());
@@ -79,7 +79,7 @@ public sealed class AuthRequestContextTests
         Assert.Null(record.Payload);
         Assert.Equal(6, record.PasswordLength);
         Assert.Equal(AuthRequestContext.Hash("secret"), record.PasswordSha256);
-        Assert.Equal(json.Length, record.PayloadLength);
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(json), record.PayloadLength);
         Assert.Equal(AuthRequestContext.Hash(json), record.PayloadSha256);
         Assert.Equal(1, record.RootSn);
         Assert.Equal("bg5esn", record.RootName);
@@ -121,16 +121,23 @@ public sealed class AuthRequestContextTests
     }
 
     [Fact]
-    public void PayloadLength_CountsUtf16Characters_CurrentBehavior()
+    public void PayloadLength_CountsUtf8Bytes()
     {
-        // Documents current behaviour: non-ASCII payloads report character
-        // count, not UTF-8 byte count.
         const string json = """{"k":"呼号"}""";
         using var doc = JsonDocument.Parse(json);
         var ctx = new AuthRequestContext("BG6VMZ", "secret", "req-1");
 
         ctx.SetDecodedPayload(json, doc.RootElement.Clone());
 
-        Assert.Equal(json.Length, ctx.PayloadLength);
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(json), ctx.PayloadLength);
+    }
+
+    [Fact]
+    public void PasswordLength_CountsUtf8Bytes()
+    {
+        const string password = "呼号";
+        var ctx = new AuthRequestContext("BG6VMZ", password, "req-1");
+
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(password), ctx.PasswordLength);
     }
 }

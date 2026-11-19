@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Sas.certs;
 using Sas.Logging;
@@ -14,12 +15,20 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
     private readonly bool _ownsHttpClient;
 
     private RootCaCert[] _roots = [];
-    private readonly ConcurrentDictionary<long, RootCrl> _rootCrls = new();
-    private readonly ConcurrentDictionary<long, IntermediateCrl> _intermediateCrls = new();
-    private readonly ConcurrentDictionary<long, IntermediateCaCert> _knownIntermediates = new();
-    private readonly ConcurrentDictionary<long, Task> _pendingFetches = new();
-    private readonly ConcurrentDictionary<long, CrlAvailability> _rootState = new();
-    private readonly ConcurrentDictionary<long, CrlAvailability> _intermediateState = new();
+    private readonly ConcurrentDictionary<string, RootCaCert> _rootsByFp = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RootCrl> _rootCrls = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, IntermediateCrl> _intermediateCrls = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, IntermediateCaCert> _knownIntermediates = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Task> _pendingFetches = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CrlAvailability> _rootState = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CrlAvailability> _intermediateState = new(StringComparer.Ordinal);
+
+    private static readonly JsonSerializerOptions MetaJsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private Timer? _timer;
     private int _refreshing;
@@ -32,15 +41,34 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
         _ownsHttpClient = http == null;
     }
 
+    internal static string FingerprintKey(byte[] fingerprint) =>
+        CertBase.FingerprintHex(fingerprint);
+
+    internal static string CacheDirectoryName(string type, string? name, byte[] fingerprint)
+    {
+        var key = FingerprintKey(fingerprint);
+        return $"{type}-{CaNameSanitizer.Sanitize(name)}-{CertBase.HexPrefix(key, 16)}";
+    }
+
     public void Initialize(RootCaCert[] roots)
     {
         _roots = roots;
+        _rootsByFp.Clear();
+        _rootCrls.Clear();
+        _rootState.Clear();
+        _knownIntermediates.Clear();
+        _intermediateCrls.Clear();
+        _intermediateState.Clear();
+        _pendingFetches.Clear();
 
         foreach (var root in roots)
         {
-            _rootState[root.Sn] = string.IsNullOrWhiteSpace(root.Crl)
+            var key = FingerprintKey(root.Fingerprint());
+            _rootsByFp[key] = root;
+            _rootState[key] = string.IsNullOrWhiteSpace(root.Crl)
                 ? CrlAvailability.NotConfigured
                 : CrlAvailability.NotFetched;
+            WriteMeta("root", root.SubjectName, root.Sn, root.Fingerprint(), root.Crl);
         }
 
         LoadCachedCrls();
@@ -63,21 +91,25 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
 
     public void RegisterIntermediate(IntermediateCaCert intermediate)
     {
-        _knownIntermediates.TryAdd(intermediate.Sn, intermediate);
+        var key = FingerprintKey(intermediate.Fingerprint());
+
+        if (_knownIntermediates.TryAdd(key, intermediate))
+            WriteMeta("intermediate", intermediate.SubjectName, intermediate.Sn,
+                intermediate.Fingerprint(), intermediate.Crl);
 
         if (string.IsNullOrWhiteSpace(intermediate.Crl))
         {
-            SetIntermediateState(intermediate.Sn, CrlAvailability.NotConfigured);
+            SetIntermediateState(intermediate, CrlAvailability.NotConfigured);
             return;
         }
 
-        if (_intermediateCrls.ContainsKey(intermediate.Sn))
+        if (_intermediateCrls.ContainsKey(key))
         {
-            SetIntermediateState(intermediate.Sn, CrlAvailability.Fresh);
+            SetIntermediateState(intermediate, CrlAvailability.Fresh);
             return;
         }
 
-        var cachePath = GetIntermediateCachePath(intermediate.Sn);
+        var cachePath = GetIntermediateCachePath(intermediate);
         if (File.Exists(cachePath))
         {
             try
@@ -89,114 +121,131 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 var crl = IntermediateCrl.FromJson(doc);
                 if (crl.VerifyBy(intermediate) && crl.IssuerSn == intermediate.Sn)
                 {
-                    _intermediateCrls.TryAdd(intermediate.Sn, crl);
-                    SetIntermediateState(intermediate.Sn, CrlAvailability.Fresh);
-                    Logger.Info($"Loaded cached intermediate CRL: issuerSn={intermediate.Sn} crlNumber={crl.CrlNumber}");
+                    _intermediateCrls.TryAdd(key, crl);
+                    SetIntermediateState(intermediate, CrlAvailability.Fresh);
+                    Logger.Info($"Loaded cached intermediate CRL: sn={intermediate.Sn} fp={CertBase.HexPrefix(key)} crlNumber={crl.CrlNumber}");
                     return;
                 }
             }
             catch (Exception ex)
             {
-                Logger.Warn($"Failed to load cached intermediate CRL for sn={intermediate.Sn}: {ex.Message}");
+                Logger.Warn($"Failed to load cached intermediate CRL for sn={intermediate.Sn} fp={CertBase.HexPrefix(key)}: {ex.Message}");
             }
         }
 
-        _pendingFetches.GetOrAdd(intermediate.Sn, sn =>
+        _pendingFetches.GetOrAdd(key, _key =>
         {
             var fetchTask = RefreshIntermediateCrlAsync(intermediate);
             fetchTask.ContinueWith(t =>
             {
-                _pendingFetches.TryRemove(sn, out _);
+                _pendingFetches.TryRemove(key, out _);
                 if (t.IsFaulted)
-                    Logger.Warn($"Background CRL fetch failed for sn={sn}: {t.Exception?.InnerException?.Message}");
+                    Logger.Warn($"Background CRL fetch failed for sn={intermediate.Sn} fp={CertBase.HexPrefix(key)}: {t.Exception?.InnerException?.Message}");
             });
             return fetchTask;
         });
     }
 
-    public bool IsIntermediateRevoked(long sn, byte[] fingerprint, out string? reason)
+    public bool IsIntermediateRevoked(
+        byte[] issuerRootFingerprint, long sn, byte[] fingerprint, out string? reason)
     {
         reason = null;
 
-        foreach (var crl in _rootCrls.Values)
+        // Only the root that signed this intermediate may revoke it. Looking at
+        // every cached root CRL would let any trusted root revoke another
+        // root's intermediates.
+        var key = FingerprintKey(issuerRootFingerprint);
+        if (!_rootCrls.TryGetValue(key, out var crl) ||
+            !crl.IsRevoked(sn, fingerprint))
         {
-            if (crl.IsRevoked(sn, fingerprint))
-            {
-                reason = $"intermediate CA sn={sn} revoked by root CRL";
-                return true;
-            }
+            return false;
         }
 
-        return false;
+        reason = $"intermediate CA sn={sn} revoked by root CRL (rootFp={CertBase.HexPrefix(key)})";
+        return true;
     }
 
-    public bool IsUserRevoked(long uid, byte[] fingerprint, out string? reason)
+    public bool IsUserRevoked(
+        byte[] issuerIntermediateFingerprint, long uid, byte[] fingerprint, out string? reason)
     {
         reason = null;
 
-        foreach (var crl in _intermediateCrls.Values)
+        // Only the intermediate that signed this user certificate may revoke
+        // it, otherwise a compromised intermediate could deny service to users
+        // issued by a different CA.
+        var key = FingerprintKey(issuerIntermediateFingerprint);
+        if (!_intermediateCrls.TryGetValue(key, out var crl) ||
+            !crl.IsRevoked(uid, fingerprint))
         {
-            if (crl.IsRevoked(uid, fingerprint))
-            {
-                reason = $"user cert uid={uid} revoked by intermediate CRL";
-                return true;
-            }
+            return false;
         }
 
-        return false;
+        reason = $"user cert uid={uid} revoked by intermediate CRL (issuerFp={CertBase.HexPrefix(key)})";
+        return true;
     }
 
-    public bool IsRootCrlOutdated(long rootSn, long nowUtc)
+    public bool IsRootCrlOutdated(byte[] rootFingerprint, long nowUtc)
     {
-        if (_rootCrls.TryGetValue(rootSn, out var crl))
+        var key = FingerprintKey(rootFingerprint);
+        if (_rootCrls.TryGetValue(key, out var crl))
             return crl.IsOutdated(nowUtc);
         return false;
     }
 
-    public CrlAvailability GetRootCrlAvailability(long rootSn, long nowUtc)
+    public CrlAvailability GetRootCrlAvailability(
+        byte[] rootFingerprint, long rootSn, long nowUtc)
     {
-        var root = _roots.FirstOrDefault(r => r.Sn == rootSn);
-        if (root == null || string.IsNullOrWhiteSpace(root.Crl))
+        var key = FingerprintKey(rootFingerprint);
+        if (!_rootsByFp.TryGetValue(key, out var root) ||
+            root.Sn != rootSn ||
+            string.IsNullOrWhiteSpace(root.Crl))
+        {
             return CrlAvailability.NotConfigured;
+        }
 
-        if (_rootCrls.TryGetValue(rootSn, out var crl))
+        if (_rootCrls.TryGetValue(key, out var crl))
             return crl.IsOutdated(nowUtc) ? CrlAvailability.Stale : CrlAvailability.Fresh;
 
-        return _rootState.GetValueOrDefault(rootSn, CrlAvailability.NotFetched);
+        return _rootState.GetValueOrDefault(key, CrlAvailability.NotFetched);
     }
 
-    public CrlAvailability GetIntermediateCrlAvailability(long intermediateSn, long nowUtc)
+    public CrlAvailability GetIntermediateCrlAvailability(
+        byte[] intermediateFingerprint, long intermediateSn, long nowUtc)
     {
-        if (!_knownIntermediates.TryGetValue(intermediateSn, out var intermediate) ||
+        var key = FingerprintKey(intermediateFingerprint);
+        if (!_knownIntermediates.TryGetValue(key, out var intermediate) ||
+            intermediate.Sn != intermediateSn ||
             string.IsNullOrWhiteSpace(intermediate.Crl))
         {
             return CrlAvailability.NotConfigured;
         }
 
-        if (_intermediateCrls.TryGetValue(intermediateSn, out var crl))
+        if (_intermediateCrls.TryGetValue(key, out var crl))
             return crl.IsOutdated(nowUtc) ? CrlAvailability.Stale : CrlAvailability.Fresh;
 
-        return _intermediateState.GetValueOrDefault(intermediateSn, CrlAvailability.NotFetched);
+        return _intermediateState.GetValueOrDefault(key, CrlAvailability.NotFetched);
     }
 
-    private void SetRootState(long sn, CrlAvailability state)
+    private void SetRootState(RootCaCert root, CrlAvailability state)
     {
-        if (_rootState.TryGetValue(sn, out var previous) && previous == state)
+        var key = FingerprintKey(root.Fingerprint());
+        if (_rootState.TryGetValue(key, out var previous) && previous == state)
             return;
 
-        _rootState[sn] = state;
+        _rootState[key] = state;
         if (state == CrlAvailability.FetchFailed)
-            Logger.Warn($"Root CRL unavailable: sn={sn} (fetch failed)");
+            Logger.Warn($"Root CRL unavailable: sn={root.Sn} fp={CertBase.HexPrefix(key)} (fetch failed)");
     }
 
-    private void SetIntermediateState(long sn, CrlAvailability state)
+    private void SetIntermediateState(IntermediateCaCert intermediate, CrlAvailability state)
     {
-        if (_intermediateState.TryGetValue(sn, out var previous) && previous == state)
+        var key = FingerprintKey(intermediate.Fingerprint());
+        if (_intermediateState.TryGetValue(key, out var previous) && previous == state)
             return;
 
-        _intermediateState[sn] = state;
+        _intermediateState[key] = state;
         if (state == CrlAvailability.FetchFailed)
-            Logger.Warn($"Intermediate CRL unavailable: sn={sn} (fetch failed)");
+            Logger.Warn($"Intermediate CRL unavailable: sn={intermediate.Sn} fp={CertBase.HexPrefix(key)} (fetch failed)");
     }
 
     public void Dispose()
@@ -238,6 +287,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
         if (string.IsNullOrWhiteSpace(root.Crl))
             return;
 
+        var key = FingerprintKey(root.Fingerprint());
+
         try
         {
             var json = await _http.GetStringAsync(root.Crl);
@@ -246,8 +297,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!doc.TryGetProperty("issuerSn", out _) || !doc.TryGetProperty("entries", out _))
             {
                 Logger.Info($"Root CRL not published yet: {root.Crl}");
-                if (!_rootCrls.ContainsKey(root.Sn))
-                    SetRootState(root.Sn, CrlAvailability.NotPublished);
+                if (!_rootCrls.ContainsKey(key))
+                    SetRootState(root, CrlAvailability.NotPublished);
                 return;
             }
 
@@ -256,21 +307,21 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!crl.VerifyBy(root))
             {
                 Logger.Error($"Root CRL signature invalid: {root.Crl}");
-                if (!_rootCrls.ContainsKey(root.Sn))
-                    SetRootState(root.Sn, CrlAvailability.FetchFailed);
+                if (!_rootCrls.ContainsKey(key))
+                    SetRootState(root, CrlAvailability.FetchFailed);
                 return;
             }
 
             if (crl.IssuerSn != root.Sn)
             {
                 Logger.Error($"Root CRL issuerSn mismatch: crl.issuerSn={crl.IssuerSn} root.sn={root.Sn}");
-                if (!_rootCrls.ContainsKey(root.Sn))
-                    SetRootState(root.Sn, CrlAvailability.FetchFailed);
+                if (!_rootCrls.ContainsKey(key))
+                    SetRootState(root, CrlAvailability.FetchFailed);
                 return;
             }
 
             var updated = false;
-            _rootCrls.AddOrUpdate(root.Sn,
+            _rootCrls.AddOrUpdate(key,
                 _ => { updated = true; return crl; },
                 (_, existing) =>
                 {
@@ -280,23 +331,23 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
 
             if (updated)
             {
-                SaveCachedRootCrl(root.Sn, json);
-                Logger.Info($"Root CRL updated: sn={root.Sn} crlNumber={crl.CrlNumber}");
+                SaveCachedRootCrl(root, json);
+                Logger.Info($"Root CRL updated: sn={root.Sn} fp={CertBase.HexPrefix(key)} crlNumber={crl.CrlNumber}");
             }
 
-            SetRootState(root.Sn, CrlAvailability.Fresh);
+            SetRootState(root, CrlAvailability.Fresh);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             Logger.Info($"No root CRL available for {root.Crl} (404 Not Found)");
-            if (!_rootCrls.ContainsKey(root.Sn))
-                SetRootState(root.Sn, CrlAvailability.NotPublished);
+            if (!_rootCrls.ContainsKey(key))
+                SetRootState(root, CrlAvailability.NotPublished);
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to refresh root CRL ({root.Crl}): {ex.Message}");
-            if (!_rootCrls.ContainsKey(root.Sn))
-                SetRootState(root.Sn, CrlAvailability.FetchFailed);
+            if (!_rootCrls.ContainsKey(key))
+                SetRootState(root, CrlAvailability.FetchFailed);
         }
     }
 
@@ -304,6 +355,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
     {
         if (string.IsNullOrWhiteSpace(issuer.Crl))
             return;
+
+        var key = FingerprintKey(issuer.Fingerprint());
 
         try
         {
@@ -313,8 +366,8 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!doc.TryGetProperty("issuerSn", out _) || !doc.TryGetProperty("entries", out _))
             {
                 Logger.Info($"Intermediate CRL not published yet: {issuer.Crl}");
-                if (!_intermediateCrls.ContainsKey(issuer.Sn))
-                    SetIntermediateState(issuer.Sn, CrlAvailability.NotPublished);
+                if (!_intermediateCrls.ContainsKey(key))
+                    SetIntermediateState(issuer, CrlAvailability.NotPublished);
                 return;
             }
 
@@ -323,21 +376,21 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
             if (!crl.VerifyBy(issuer))
             {
                 Logger.Error($"Intermediate CRL signature invalid: {issuer.Crl}");
-                if (!_intermediateCrls.ContainsKey(issuer.Sn))
-                    SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
+                if (!_intermediateCrls.ContainsKey(key))
+                    SetIntermediateState(issuer, CrlAvailability.FetchFailed);
                 return;
             }
 
             if (crl.IssuerSn != issuer.Sn)
             {
                 Logger.Error($"Intermediate CRL issuerSn mismatch: crl.issuerSn={crl.IssuerSn} issuer.sn={issuer.Sn}");
-                if (!_intermediateCrls.ContainsKey(issuer.Sn))
-                    SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
+                if (!_intermediateCrls.ContainsKey(key))
+                    SetIntermediateState(issuer, CrlAvailability.FetchFailed);
                 return;
             }
 
             var updated = false;
-            _intermediateCrls.AddOrUpdate(issuer.Sn,
+            _intermediateCrls.AddOrUpdate(key,
                 _ => { updated = true; return crl; },
                 (_, existing) =>
                 {
@@ -347,23 +400,23 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
 
             if (updated)
             {
-                SaveCachedIntermediateCrl(issuer.Sn, json);
-                Logger.Info($"Intermediate CRL loaded: issuerSn={issuer.Sn} crlNumber={crl.CrlNumber}");
+                SaveCachedIntermediateCrl(issuer, json);
+                Logger.Info($"Intermediate CRL loaded: sn={issuer.Sn} fp={CertBase.HexPrefix(key)} crlNumber={crl.CrlNumber}");
             }
 
-            SetIntermediateState(issuer.Sn, CrlAvailability.Fresh);
+            SetIntermediateState(issuer, CrlAvailability.Fresh);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             Logger.Info($"No intermediate CRL available for {issuer.Crl} (404 Not Found)");
-            if (!_intermediateCrls.ContainsKey(issuer.Sn))
-                SetIntermediateState(issuer.Sn, CrlAvailability.NotPublished);
+            if (!_intermediateCrls.ContainsKey(key))
+                SetIntermediateState(issuer, CrlAvailability.NotPublished);
         }
         catch (Exception ex)
         {
             Logger.Warn($"Failed to refresh intermediate CRL ({issuer.Crl}): {ex.Message}");
-            if (!_intermediateCrls.ContainsKey(issuer.Sn))
-                SetIntermediateState(issuer.Sn, CrlAvailability.FetchFailed);
+            if (!_intermediateCrls.ContainsKey(key))
+                SetIntermediateState(issuer, CrlAvailability.FetchFailed);
         }
     }
 
@@ -374,9 +427,17 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
 
         foreach (var root in _roots)
         {
-            var rootCachePath = GetRootCachePath(root.Sn);
+            var key = FingerprintKey(root.Fingerprint());
+            var rootCachePath = GetRootCachePath(root);
+
             if (!File.Exists(rootCachePath))
+            {
+                var legacyPath = Path.Combine(_crlDir, root.Sn.ToString(), "root.json");
+                if (File.Exists(legacyPath))
+                    Logger.Info($"Ignoring legacy CRL cache for sn={root.Sn} fp={CertBase.HexPrefix(key)}; fingerprint-based cache is required");
                 continue;
+            }
+
             try
             {
                 var json = File.ReadAllText(rootCachePath);
@@ -386,14 +447,14 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
                 var crl = RootCrl.FromJson(doc);
                 if (crl.VerifyBy(root) && crl.IssuerSn == root.Sn)
                 {
-                    _rootCrls.TryAdd(root.Sn, crl);
-                    SetRootState(root.Sn, CrlAvailability.Fresh);
-                    Logger.Info($"Loaded cached root CRL: sn={root.Sn} crlNumber={crl.CrlNumber}");
+                    _rootCrls.TryAdd(key, crl);
+                    SetRootState(root, CrlAvailability.Fresh);
+                    Logger.Info($"Loaded cached root CRL: sn={root.Sn} fp={CertBase.HexPrefix(key)} crlNumber={crl.CrlNumber}");
                 }
             }
             catch (Exception ex)
             {
-                Logger.Warn($"Failed to load cached root CRL for sn={root.Sn}: {ex.Message}");
+                Logger.Warn($"Failed to load cached root CRL for sn={root.Sn} fp={CertBase.HexPrefix(key)}: {ex.Message}");
             }
         }
 
@@ -401,37 +462,86 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
         // because _knownIntermediates is empty at startup.
     }
 
-    private string GetRootCachePath(long sn) =>
-        Path.Combine(_crlDir, sn.ToString(), "root.json");
+    private string GetRootCacheDirectory(RootCaCert root) =>
+        Path.Combine(_crlDir, CacheDirectoryName("root", root.SubjectName, root.Fingerprint()));
 
-    private string GetIntermediateCachePath(long sn) =>
-        Path.Combine(_crlDir, sn.ToString(), "intermediate.json");
+    private string GetRootCachePath(RootCaCert root) =>
+        Path.Combine(GetRootCacheDirectory(root), "root.json");
 
-    private void SaveCachedRootCrl(long sn, string rawJson)
+    private string GetIntermediateCacheDirectory(IntermediateCaCert intermediate) =>
+        Path.Combine(_crlDir,
+            CacheDirectoryName("intermediate", intermediate.SubjectName, intermediate.Fingerprint()));
+
+    private string GetIntermediateCachePath(IntermediateCaCert intermediate) =>
+        Path.Combine(GetIntermediateCacheDirectory(intermediate), "intermediate.json");
+
+    private void SaveCachedRootCrl(RootCaCert root, string rawJson)
     {
         try
         {
-            var dir = Path.Combine(_crlDir, sn.ToString());
+            var dir = GetRootCacheDirectory(root);
             Directory.CreateDirectory(dir);
-            File.WriteAllText(GetRootCachePath(sn), rawJson);
+            File.WriteAllText(GetRootCachePath(root), rawJson);
+            WriteMeta("root", root.SubjectName, root.Sn, root.Fingerprint(), root.Crl);
         }
         catch (Exception ex)
         {
-            Logger.Warn($"Failed to cache root CRL for sn={sn}: {ex.Message}");
+            Logger.Warn($"Failed to cache root CRL for sn={root.Sn}: {ex.Message}");
         }
     }
 
-    private void SaveCachedIntermediateCrl(long sn, string rawJson)
+    private void SaveCachedIntermediateCrl(IntermediateCaCert intermediate, string rawJson)
     {
         try
         {
-            var dir = Path.Combine(_crlDir, sn.ToString());
+            var dir = GetIntermediateCacheDirectory(intermediate);
             Directory.CreateDirectory(dir);
-            File.WriteAllText(GetIntermediateCachePath(sn), rawJson);
+            File.WriteAllText(GetIntermediateCachePath(intermediate), rawJson);
+            WriteMeta("intermediate", intermediate.SubjectName, intermediate.Sn,
+                intermediate.Fingerprint(), intermediate.Crl);
         }
         catch (Exception ex)
         {
-            Logger.Warn($"Failed to cache intermediate CRL for sn={sn}: {ex.Message}");
+            Logger.Warn($"Failed to cache intermediate CRL for sn={intermediate.Sn}: {ex.Message}");
         }
+    }
+
+    private void WriteMeta(string type, string name, long sn, byte[] fingerprint, string crl)
+    {
+        try
+        {
+            var dir = type == "root"
+                ? Path.Combine(_crlDir, CacheDirectoryName("root", name, fingerprint))
+                : Path.Combine(_crlDir, CacheDirectoryName("intermediate", name, fingerprint));
+
+            var metaPath = Path.Combine(dir, "meta.json");
+            Directory.CreateDirectory(dir);
+            if (File.Exists(metaPath))
+                return;
+
+            var meta = new CrlCacheMeta
+            {
+                Type = type,
+                Name = name,
+                Sn = sn,
+                Fingerprint = FingerprintKey(fingerprint),
+                Crl = crl
+            };
+
+            File.WriteAllText(metaPath, JsonSerializer.Serialize(meta, MetaJsonOptions));
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Failed to write CRL metadata for {type} sn={sn}: {ex.Message}");
+        }
+    }
+
+    private sealed class CrlCacheMeta
+    {
+        public string Type { get; init; } = "";
+        public string Name { get; init; } = "";
+        public long Sn { get; init; }
+        public string Fingerprint { get; init; } = "";
+        public string Crl { get; init; } = "";
     }
 }

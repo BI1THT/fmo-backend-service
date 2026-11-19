@@ -132,21 +132,29 @@ internal sealed class HttpAuthHandler : IAuthHandler
         if (!CallsignValidator.TryNormalize(user.Callsign, out var certCallsign, out var certCallsignError))
             throw Deny(ctx, $"invalid certificate callsign: {certCallsignError}");
 
+        var issuerFp = intermediate.Fingerprint();
+        var issuerFpHex = CertBase.FingerprintHex(issuerFp);
+
         ctx.Callsign = certCallsign;
         ctx.UserUid = user.Uid;
         ctx.IssuerSn = intermediate.Sn;
         ctx.IssuerName = intermediate.SubjectName;
+        ctx.IssuerFp = issuerFpHex;
 
-        Logger.Debug($"HTTP auth: intermediate: sn={intermediate.Sn} issuerSn={intermediate.IssuerSn} subject={LogSafe.Format(intermediate.SubjectName)}");
+        Logger.Debug($"HTTP auth: intermediate: sn={intermediate.Sn} fp={CertBase.HexPrefix(issuerFpHex)} issuerSn={intermediate.IssuerSn} subject={LogSafe.Format(intermediate.SubjectName)}");
         Logger.Debug($"HTTP auth: user: callsign={LogSafe.Format(user.Callsign)} uid={user.Uid} publicKey.length={user.PublicKey?.Length ?? 0}");
 
         var root = _rootStore.FindIssuer(intermediate);
         if (root == null)
             throw Deny(ctx, "chain invalid: no trusted root");
 
+        var rootFp = root.Fingerprint();
+        var rootFpHex = CertBase.FingerprintHex(rootFp);
+
         ctx.RootSn = root.Sn;
         ctx.RootName = root.SubjectName;
-        Logger.Debug($"HTTP auth: matched root: sn={root.Sn} subject={LogSafe.Format(root.SubjectName)}");
+        ctx.RootFp = rootFpHex;
+        Logger.Debug($"HTTP auth: matched root: sn={root.Sn} fp={CertBase.HexPrefix(rootFpHex)} subject={LogSafe.Format(root.SubjectName)}");
 
         var vr = _verifier.VerifyFullChain(root, intermediate, user, now);
         if (vr != VerifyResult.OK)
@@ -173,9 +181,10 @@ internal sealed class HttpAuthHandler : IAuthHandler
 
         _crlManager.RegisterIntermediate(intermediate);
 
-        var rootCrlAvailability = _crlManager.GetRootCrlAvailability(root.Sn, now);
+        var rootCrlAvailability =
+            _crlManager.GetRootCrlAvailability(rootFp, root.Sn, now);
         var intermediateCrlAvailability =
-            _crlManager.GetIntermediateCrlAvailability(intermediate.Sn, now);
+            _crlManager.GetIntermediateCrlAvailability(issuerFp, intermediate.Sn, now);
 
         if (_config.Crl.Mode == "strict" &&
             (rootCrlAvailability is not CrlAvailability.Fresh ||
@@ -192,17 +201,23 @@ internal sealed class HttpAuthHandler : IAuthHandler
                          $"intermediate={intermediateCrlAvailability} req={requestId}");
         }
 
-        var rootOutdated = _crlManager.IsRootCrlOutdated(root.Sn, now);
+        var rootOutdated = _crlManager.IsRootCrlOutdated(rootFp, now);
         if (rootOutdated)
         {
-            Logger.Warn($"HTTP auth: root CRL outdated rootSn={root.Sn} rootName={LogSafe.Format(root.SubjectName)} callsign={LogSafe.Format(certCallsign)} req={requestId}");
+            Logger.Warn($"HTTP auth: root CRL outdated rootSn={root.Sn} rootFp={CertBase.HexPrefix(rootFpHex)} rootName={LogSafe.Format(root.SubjectName)} callsign={LogSafe.Format(certCallsign)} req={requestId}");
         }
 
-        if (_crlManager.IsIntermediateRevoked(intermediate.Sn, intermediate.Fingerprint(), out var intReason))
+        if (_crlManager.IsIntermediateRevoked(
+                rootFp, intermediate.Sn, intermediate.Fingerprint(), out var intReason))
+        {
             throw Deny(ctx, $"intermediate revoked: {LogSafe.Format(intReason, 128)}");
+        }
 
-        if (_crlManager.IsUserRevoked(user.Uid, user.Fingerprint(), out var userReason))
+        if (_crlManager.IsUserRevoked(
+                issuerFp, user.Uid, user.Fingerprint(), out var userReason))
+        {
             throw Deny(ctx, $"user revoked: {LogSafe.Format(userReason, 128)}");
+        }
 
         var role = DetermineRole(user, server);
         ctx.Role = role;
@@ -304,8 +319,8 @@ internal sealed class HttpAuthHandler : IAuthHandler
     private static string Scope(AuthRequestContext ctx)
     {
         return $"callsign={LogSafe.Format(ctx.Callsign, CallsignValidator.MaxBytes)} " +
-               $"rootSn={Sn(ctx.RootSn)} rootName={LogSafe.Format(ctx.RootName)} " +
-               $"issuerSn={Sn(ctx.IssuerSn)} issuerName={LogSafe.Format(ctx.IssuerName)} " +
+               $"rootSn={Sn(ctx.RootSn)} rootFp={CertBase.HexPrefix(ctx.RootFp)} rootName={LogSafe.Format(ctx.RootName)} " +
+               $"issuerSn={Sn(ctx.IssuerSn)} issuerFp={CertBase.HexPrefix(ctx.IssuerFp)} issuerName={LogSafe.Format(ctx.IssuerName)} " +
                $"payloadLen={ctx.PayloadLength} payloadSha256={ctx.PayloadHash} " +
                $"passwordLen={ctx.PasswordLength} req={ctx.RequestId}";
     }

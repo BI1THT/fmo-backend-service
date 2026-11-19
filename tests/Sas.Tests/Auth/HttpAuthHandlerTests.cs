@@ -548,10 +548,39 @@ public sealed class HttpAuthHandlerTests
     }
 
     [Fact]
+    public void Process_IntermediateRevocationFromAnotherRoot_DoesNotDeny()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Crl.RevokeIntermediate(
+            new byte[32],
+            env.Pki.Intermediate.Sn,
+            env.Pki.Intermediate.Fingerprint());
+
+        var result = env.ProcessValid();
+
+        Assert.Equal("user", result.Role);
+    }
+
+    [Fact]
+    public void Process_UserRevocationFromAnotherIntermediate_DoesNotDeny()
+    {
+        using var env = new AuthTestEnvironment();
+        env.Crl.RevokeUser(
+            new byte[32],
+            env.Pki.User.Uid,
+            env.Pki.User.Fingerprint());
+
+        var result = env.ProcessValid();
+
+        Assert.Equal("user", result.Role);
+    }
+
+    [Fact]
     public void Process_RevokedIntermediate_Denies()
     {
         using var env = new AuthTestEnvironment();
-        env.Crl.RevokeIntermediate(env.Pki.Intermediate.Sn, env.Pki.Intermediate.Fingerprint());
+        env.Crl.RevokeIntermediate(
+            env.Pki.Root.Fingerprint(), env.Pki.Intermediate.Sn, env.Pki.Intermediate.Fingerprint());
 
         var ex = Deny(env);
 
@@ -563,7 +592,8 @@ public sealed class HttpAuthHandlerTests
     public void Process_RevokedUser_Denies()
     {
         using var env = new AuthTestEnvironment();
-        env.Crl.RevokeUser(env.Pki.User.Uid, env.Pki.User.Fingerprint());
+        env.Crl.RevokeUser(
+            env.Pki.Intermediate.Fingerprint(), env.Pki.User.Uid, env.Pki.User.Fingerprint());
 
         var ex = Deny(env);
 
@@ -679,6 +709,21 @@ public sealed class HttpAuthHandlerTests
         Assert.NotEqual(JsonValueKind.Null, record.GetProperty("password").ValueKind);
         Assert.NotEqual(JsonValueKind.Null, record.GetProperty("payload").ValueKind);
     }
+
+    [Fact]
+    public void Process_Allow_ArchiveContainsRootAndIssuerFingerprints()
+    {
+        using var env = new AuthTestEnvironment();
+
+        env.ProcessValid();
+
+        var record = SingleRecord(env);
+        Assert.Equal(Hex(env.Pki.Root.Fingerprint()), record.GetProperty("rootFp").GetString());
+        Assert.Equal(Hex(env.Pki.Intermediate.Fingerprint()), record.GetProperty("issuerFp").GetString());
+    }
+
+    private static string Hex(byte[] bytes) =>
+        Convert.ToHexString(bytes).ToLowerInvariant();
 
     [Fact]
     public void Process_DenyWithDecodablePayload_WritesSummary()

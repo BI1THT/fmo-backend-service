@@ -97,6 +97,21 @@ public sealed class AuthRequestContextTests
     }
 
     [Fact]
+    public void ToRecord_IncludesRootAndIssuerFingerprints()
+    {
+        var ctx = new AuthRequestContext("BG6VMZ", "secret", "req-1")
+        {
+            RootFp = "aabbccdd",
+            IssuerFp = "eeff0011"
+        };
+
+        var record = ctx.ToRecord("allow", null, includePayload: false);
+
+        Assert.Equal("aabbccdd", record.RootFp);
+        Assert.Equal("eeff0011", record.IssuerFp);
+    }
+
+    [Fact]
     public void ToRecord_WithPayload_IncludesRawPasswordAndJson()
     {
         using var doc = JsonDocument.Parse("""{"role":"super"}""");

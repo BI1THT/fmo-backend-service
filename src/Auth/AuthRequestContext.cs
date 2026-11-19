@@ -35,8 +35,10 @@ public sealed class AuthRequestContext
     public int PayloadLength { get; private set; }
 
     public long? RootSn { get; set; }
+    public string? RootFp { get; set; }
     public string? RootName { get; set; }
     public long? IssuerSn { get; set; }
+    public string? IssuerFp { get; set; }
     public string? IssuerName { get; set; }
     public long? UserUid { get; set; }
     public string? Role { get; set; }
@@ -66,8 +68,10 @@ public sealed class AuthRequestContext
             Result = result,
             Reason = reason,
             RootSn = RootSn,
+            RootFp = RootFp,
             RootName = RootName,
             IssuerSn = IssuerSn,
+            IssuerFp = IssuerFp,
             IssuerName = IssuerName,
             UserUid = UserUid,
             Role = Role,

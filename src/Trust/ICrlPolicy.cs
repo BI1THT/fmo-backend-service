@@ -18,18 +18,34 @@ public enum CrlAvailability
 
 /// <summary>
 /// Revocation policy used by the auth pipeline. Implemented by <see cref="CrlManager"/>.
+/// Cache and lookup keys use certificate fingerprints because CA serial numbers
+/// are not guaranteed to be globally unique.
 /// </summary>
 public interface ICrlPolicy
 {
     void RegisterIntermediate(IntermediateCaCert intermediate);
 
-    bool IsRootCrlOutdated(long rootSn, long nowUtc);
+    bool IsRootCrlOutdated(byte[] rootFingerprint, long nowUtc);
 
-    CrlAvailability GetRootCrlAvailability(long rootSn, long nowUtc);
+    CrlAvailability GetRootCrlAvailability(
+        byte[] rootFingerprint, long rootSn, long nowUtc);
 
-    CrlAvailability GetIntermediateCrlAvailability(long intermediateSn, long nowUtc);
+    CrlAvailability GetIntermediateCrlAvailability(
+        byte[] intermediateFingerprint, long intermediateSn, long nowUtc);
 
-    bool IsIntermediateRevoked(long sn, byte[] fingerprint, out string? reason);
+    /// <summary>
+    /// Checks whether an intermediate was revoked by its issuing root.
+    /// <paramref name="issuerRootFingerprint"/> must be the root that signed
+    /// the intermediate so a CRL from another root cannot revoke it.
+    /// </summary>
+    bool IsIntermediateRevoked(
+        byte[] issuerRootFingerprint, long sn, byte[] fingerprint, out string? reason);
 
-    bool IsUserRevoked(long uid, byte[] fingerprint, out string? reason);
+    /// <summary>
+    /// Checks whether a user certificate was revoked by its issuing
+    /// intermediate. <paramref name="issuerIntermediateFingerprint"/> must be
+    /// the intermediate that signed the user certificate.
+    /// </summary>
+    bool IsUserRevoked(
+        byte[] issuerIntermediateFingerprint, long uid, byte[] fingerprint, out string? reason);
 }

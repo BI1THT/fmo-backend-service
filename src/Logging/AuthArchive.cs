@@ -36,8 +36,10 @@ public sealed record AuthArchiveRecord
     public string Result { get; init; } = "";
     public string? Reason { get; init; }
     public long? RootSn { get; init; }
+    public string? RootFp { get; init; }
     public string? RootName { get; init; }
     public long? IssuerSn { get; init; }
+    public string? IssuerFp { get; init; }
     public string? IssuerName { get; init; }
     public long? UserUid { get; init; }
     public string? Role { get; init; }

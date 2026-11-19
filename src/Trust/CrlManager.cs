@@ -251,6 +251,21 @@ public sealed class CrlManager : ICrlPolicy, IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
+
+        // Let in-flight fetches finish before the HTTP client and the cache
+        // directory go away; failures are already logged by the continuation.
+        var pending = _pendingFetches.Values.ToArray();
+        if (pending.Length > 0)
+        {
+            try
+            {
+                Task.WaitAll(pending, TimeSpan.FromSeconds(5));
+            }
+            catch (AggregateException)
+            {
+            }
+        }
+
         if (_ownsHttpClient)
             _http?.Dispose();
     }

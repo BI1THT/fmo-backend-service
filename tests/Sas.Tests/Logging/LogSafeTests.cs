@@ -46,12 +46,20 @@ public sealed class LogSafeTests
     [Fact]
     public void Format_TruncatesWithEllipsis()
     {
-        // Current behaviour: the ellipsis is appended after the limit is reached,
-        // so the result can be maxLength + 1 characters long.
+        // The ellipsis is counted inside maxLength.
         var formatted = LogSafe.Format("abcdefghij", maxLength: 5);
 
-        Assert.Equal("abcde…", formatted);
-        Assert.Equal(6, formatted.Length);
+        Assert.Equal("abcd…", formatted);
+        Assert.Equal(5, formatted.Length);
+    }
+
+    [Fact]
+    public void Format_TruncationDoesNotSplitSurrogatePair()
+    {
+        var formatted = LogSafe.Format("📻📻", maxLength: 3);
+
+        Assert.Equal("📻…", formatted);
+        Assert.Equal(3, formatted.Length);
     }
 
     [Fact]
@@ -65,7 +73,7 @@ public sealed class LogSafeTests
     [InlineData(-5)]
     public void Format_NonPositiveMaxLength_BehavesLikeOne(int maxLength)
     {
-        Assert.Equal("a…", LogSafe.Format("abcd", maxLength));
+        Assert.Equal("…", LogSafe.Format("abcd", maxLength));
     }
 
     [Fact]

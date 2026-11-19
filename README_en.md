@@ -6,9 +6,9 @@
 
 ---
 
-FMO (FM Over Internet) Server Authorizer Service is a standalone device authenticator designed specifically for the amateur radio FMO digital communication network.
+FMO (FM Over Internet) Server Authorizer Service is a standalone device authenticator for the amateur radio FMO digital communication network.
 
-It performs device identity verification offline through a three-layer certificate chain: **Root CA → Intermediate CA → User/Device Certificate**. It does not depend on a real-time authoritative center — enthusiasts can deploy their own server, building a self-hosted certificate authentication model in the ham radio world.
+It performs device identity verification offline through a three-layer certificate chain: **Root CA → Intermediate CA → User/Device Certificate**. The deploying party holds the root certificate and runs its own instance without depending on a real-time central authentication service.
 
 ```
 Device ──MQTT CONNECT──▶ EMQX Broker ──POST /auth──▶ SAS
@@ -17,21 +17,21 @@ Device ──MQTT CONNECT──▶ EMQX Broker ──POST /auth──▶ SAS
 
 ---
 
-## Why Do You Need It?
+## Background and Design Goals
 
-Digital communication networks that rely on a central authentication server typically share a few common challenges:
+Digital communication networks that rely on a central authentication server generally have the following limitations:
 
-| Pain Point | Description |
-|------------|-------------|
+| Problem | Description |
+|---------|-------------|
 | **Single Point of Failure** | When the central service is unavailable, users may be unable to log in |
 | **Ongoing Maintenance** | Requires dedicated staff to keep authentication infrastructure running |
-| **External Dependencies** | Individuals or small groups struggle to build independent trusted networks |
+| **External Dependencies** | Building an independent trusted network has a relatively high cost for individuals or small groups |
 
-FMO Server Authorizer Service shifts the trust anchor from "a central server on the network" down to "the root certificate in your hands", offering a viable path to self-hosted secure authentication.
+This service moves the trust anchor from a central server to the root certificate held by the deploying party, providing an implementation path for self-hosted authentication.
 
-## Core Concept: Three-Layer Certificate Chain
+## Trust Model
 
-This service adopts the classic PKI (Public Key Infrastructure) trust model:
+This service uses the PKI (Public Key Infrastructure) trust model:
 
 ```
 Root Certificate (Root CA)
@@ -39,59 +39,59 @@ Root Certificate (Root CA)
      └─ User/Device Certificate
 ```
 
-- **Root Certificate** – The ultimate trust anchor, securely stored offline by the network creator, typically does not directly issue user certificates.
-- **Intermediate Certificate** – Issued by the Root CA, used for day-to-day user and device management, can be periodically rotated or issued per subnet.
-- **User/Device Certificate** – Issued by the Intermediate CA, bound to a specific radio device or operator callsign, used for identity proof on every connection.
+- **Root Certificate** – Trust anchor, stored offline by the deploying party; it typically does not issue user certificates directly.
+- **Intermediate Certificate** – Issued by the Root CA for routine user and device management; it can be rotated periodically or issued per subnet.
+- **User/Device Certificate** – Issued by the Intermediate CA, bound to a specific radio device or operator callsign, and used as identity proof for connections.
 
-The verification process runs locally: the authenticator loads root certificates at startup and validates an FMO device's identity by checking the certificate chain's signatures, validity periods, and revocation status, without querying an online database.
+Verification runs locally: the authenticator loads root certificates at startup and determines an FMO device's identity by checking the certificate chain's signatures, validity periods, and revocation status, without querying an online database.
 
 ## Self-Hosted Certificate Authentication
 
-Its basic approach is to **re-verify every connection rather than assume trust**:
+The authentication policy is as follows:
 
-- Don't trust network location (whether the request comes from intranet or public internet)
-- Don't trust session state (no "authenticate once, valid forever" tokens)
-- Every connection request must carry a valid device certificate, independently verified by this service
+- Authentication results do not depend on the request's network location (intranet or public internet).
+- Existing session state is not reused, and no long-lived authentication token is issued.
+- Every connection request must carry a valid device certificate, which this service verifies independently.
 
-Devices that pass verification can establish communication, reducing the risk of unauthorized access even in partially untrusted network environments.
+Only devices that pass verification can establish a connection; when the network environment is not fully controlled, this reduces the risk of unauthorized access.
 
-## Features
+## Key Features
 
-- Offline Verification – Typically no internet connection needed; certificate chain validation runs locally
-- Self-Hosted Authentication – Each connection is verified, reducing unauthorized access
-- Lightweight & Easy to Deploy – Single binary, simple configuration, suitable for embedded or lightweight servers
+- Offline Verification – Certificate chain validation runs locally; typically no internet connection is required
+- Self-Hosted Authentication – Verification is performed on every connection
+- Lightweight Deployment – Single binary with few configuration items; suitable for embedded or lightweight servers
 - Three-Layer PKI Chain – Root CA → Intermediate CA → User Cert
-- Ed25519 High-Performance Signatures – Modern elliptic curve, secure and fast
-- CBOR Compact Encoding – More compact than JSON, suitable for embedded scenarios
-- CRL Revocation Lists – Certificate revocation checking with periodic refresh
-- Login Audit Archive – Full login payloads archived per callsign; logs include Root SN and request ID
-- EMQX HTTP Auth Integration – Plug-and-play as EMQX Broker authentication callback
-- Cluster Support – Multiple MQTT Brokers sharing a single SAS instance for authentication
-- OTA Auto-Update – Built-in version checking and automatic upgrades
+- Ed25519 Signatures – Elliptic-curve signature algorithm
+- CBOR Encoding – More compact than JSON; suitable for bandwidth-constrained scenarios
+- CRL Revocation Checking – Certificate revocation status lookup with periodic refresh
+- Login Audit Archive – Login payloads and certificate chains archived per callsign; logs include Root SN and request ID
+- EMQX HTTP Auth Integration – Acts as an EMQX Broker HTTP authentication callback
+- Cluster Support – Multiple MQTT Brokers share a single SAS instance for authentication
+- OTA Update – Built-in version checking and upgrade entry point
 - Cross-Platform – Windows / Linux / macOS (x64 & ARM64)
-- Docker Compose Deployment – Orchestrates SAS and EMQX together with an internal HTTP authentication callback
+- Docker Compose Deployment – Orchestrates SAS and EMQX with a preconfigured internal HTTP authentication callback
 - Persistent Runtime Configuration – `sas-data` and `emqx-data` volumes retain configuration, certificates, and broker data
-- Image-Based Updates – Pull the latest GHCR image and let Compose recreate services as needed, reducing manual work and service recovery time
+- Image-Based Updates – Pull the GHCR image and let Compose recreate services
 
 ## Typical Deployment Scenarios
 
 ### Personal FMO Gateway
 
-Generate your own root certificate and issue certificates for your home FMO devices. Only your own devices can connect.
+The deploying party generates a root certificate and issues certificates for its own FMO devices; only devices holding an issued certificate can connect.
 
 ### Club Shared Reflector
 
-The club administrator holds the root certificate, issues intermediate and user certificates for members. Members connect to club resources using their certificates.
+The club administrator holds the root certificate and issues intermediate and user certificates to members; members connect to club resources with their certificates.
 
 ### Emergency Communication Field Network
 
-When setting up a temporary emergency network, the field commander quickly generates a certificate hierarchy. All participating stations securely mesh using pre-provisioned certificates, with no dependence on external networks.
+For a temporary emergency network, a certificate hierarchy can be generated on site; participating stations form a network with pre-provisioned certificates and do not depend on external networks.
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
-| Runtime | .NET 10.0 (self-contained, no installation required) |
+| Runtime | .NET 10.0 (self-contained; no .NET runtime installation required) |
 | Signature Algorithm | Ed25519 ([Chaos.NaCl](https://www.nuget.org/packages/Chaos.NaCl.Standard)) |
 | Serialization | CBOR ([System.Formats.Cbor](https://www.nuget.org/packages/System.Formats.Cbor)) |
 | HTTP Server | HttpListener (built-in) |
@@ -101,23 +101,23 @@ When setting up a temporary emergency network, the field commander quickly gener
 
 ## Installation
 
-### From Device Dashboard (Recommended)
+### From the Device Management Dashboard (Recommended)
 
-The FMO device management dashboard provides one-click installation scripts with pre-configured parameters for your platform.
+The FMO device management dashboard provides installation scripts and preconfigured parameters for each platform.
 
 ### Download Pre-built Binaries
 
-Download for your platform from Releases:
+Download the package for the target platform from Releases:
 
 | Platform | File | Notes |
 |----------|------|-------|
-| Windows x64 | `sas-win-x64.zip` | Extract and double-click `Sas.exe` |
+| Windows x64 | `sas-win-x64.zip` | Extract and run `Sas.exe` |
 | Linux x64 | `sas-linux-x64.tar.gz` | `tar xzf` then run `./Sas` |
-| Linux ARM64 | `sas-linux-arm64.tar.gz` | Raspberry Pi, etc. |
-| macOS Apple Silicon | `sas-osx-arm64.tar.gz` | M1/M2/M3/M4, run `./Sas` in terminal |
-| macOS Intel | `sas-osx-x64.tar.gz` | Intel Mac |
+| Linux ARM64 | `sas-linux-arm64.tar.gz` | For Raspberry Pi and similar devices; same usage |
+| macOS Apple Silicon | `sas-osx-arm64.tar.gz` | M1/M2/M3/M4; run `./Sas` in a terminal |
+| macOS Intel | `sas-osx-x64.tar.gz` | Intel-based Mac; same usage |
 
-No .NET installation required — extract and run.
+No .NET runtime installation is required; extract and run.
 
 ### Build from Source
 
@@ -146,10 +146,10 @@ Supported RIDs (Runtime Identifiers):
 ### Windows Desktop
 
 ```
-Double-click Sas.exe → Interactive setup → Auto-start
+Run Sas.exe, complete interactive setup, then start
 ```
 
-Subsequent launches start directly without reconfiguration.
+Configuration is persisted; subsequent launches start directly.
 
 ### Linux Command Line
 
@@ -162,13 +162,13 @@ Subsequent launches start directly without reconfiguration.
 ./Sas
 ```
 
-### Verify Service is Running
+### Service Availability Check
 
 ```bash
 curl -X POST http://127.0.0.1:8080/auth \
   -H "Content-Type: application/json" \
   -d '{"username":"BG6VMZ","password":"...base64url..."}'
-# → {"result":"deny"} (denied without valid cert = service is working)
+# → {"result":"deny"} (expected without a valid certificate; indicates the service is responding)
 ```
 
 ---
@@ -189,7 +189,7 @@ docker compose up -d
 docker compose logs -f sas emqx
 ```
 
-On Windows PowerShell, use:
+In Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
@@ -202,16 +202,16 @@ Published ports:
 | EMQX MQTT | `tcp://<server>:1883` | FMO device connections |
 | EMQX Dashboard | `http://<server>:18083` | Sign in with the Dashboard credentials in `.env` |
 
-The SAS HTTP authentication port is exposed only on the internal Compose network and is not reachable directly from the host. The `sas-data` volume persists SAS configuration and root certificates, while `emqx-data` persists EMQX data. Do not remove these volumes unless you intend to fully reinitialize the deployment.
+The SAS HTTP authentication port is exposed only on the internal Compose network and is not reachable directly from the host. The `sas-data` volume persists SAS configuration and root certificates, while `emqx-data` persists EMQX data. Removing these volumes deletes configuration and data; do so only for a full reinitialization.
 
-To update, pull the latest images and let Compose recreate only services that require an update:
+Update flow: pull the latest images, then let Compose recreate only the services that require an update.
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-This two-command workflow avoids manually stopping, deleting, and recreating containers, reducing maintenance operations and service recovery time. A single-instance service still has a brief connection interruption while it is recreated.
+This two-command workflow pulls images and recreates services without manually stopping, deleting, or creating containers. A single-instance service still has a brief connection interruption during recreation.
 
 ---
 
@@ -232,7 +232,7 @@ Body: { "username": "${username}", "password": "${password}" }
 
 ## Configuration Reference
 
-On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERPROFILE%\.sas\config.json`). This file is the single source of truth — no arguments needed on subsequent launches.
+On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERPROFILE%\.sas\config.json`). This file is the single source of configuration; no arguments are needed on subsequent launches.
 
 ### config.json Structure
 
@@ -290,7 +290,7 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 |-------|-------------|--------|
 | `server.uid` | Server unique ID | FMO management dashboard |
 | `server.callsign` | Server callsign | Same, e.g. `BG5ESN` |
-| `mqtt.host` | MQTT Broker address | Your Broker IP or domain |
+| `mqtt.host` | MQTT Broker address | Broker IP or domain |
 | `server.certFingerprint` | Server cert SHA-256 fingerprint (base64url) | FMO dashboard "Certificate Fingerprint" |
 
 ### CLI Arguments
@@ -318,9 +318,9 @@ On first run, SAS writes configuration to `~/.sas/config.json` (Windows: `%USERP
 
 ### Login Audit & Archive
 
-Every HTTP authentication produces a structured log line. Successful logins store the complete signed payload; failed logins store a summary by default to keep high-frequency failures from filling the disk.
+Every HTTP authentication produces a structured log line. Successful logins store the complete signed payload; failed logins store a summary by default to keep high-frequency failures from consuming disk space.
 
-The log shows which Root CA and Intermediate CA issued the user certificate, plus a request ID that links the line to its archive record:
+The log includes the Root CA and Intermediate CA that issued the user certificate, plus a request ID linking the line to its archive record:
 
 ```text
 [INFO ] HTTP auth: allow callsign=BG6VMZ rootSn=1 rootFp=1a2b3c4d rootName=BG5ESN issuerSn=1001 issuerFp=7f8e9d0c issuerName=bd4wpw payloadLen=3120 payloadSha256=3f2a9c1d4b5e6f70 passwordLen=4160 req=a1b2c3d4e5f6
@@ -333,7 +333,7 @@ Entry-point protections:
 
 - `username` is limited to 32 UTF-8 bytes and only `A-Z 0-9 / -`; invalid requests are denied before any parsing or archiving.
 - Global rate limit defaults to 600 requests/minute.
-- A callsign with 20 failures within 5 minutes is temporarily blocked for 10 minutes. Only failures after the certificate chain has been verified count, so an attacker cannot lock out a victim by spoofing their callsign.
+- A callsign with 20 failures within 5 minutes is temporarily blocked for 10 minutes. Only failures after the certificate chain has been verified count, so spoofed callsigns cannot affect legitimate users.
 - `http.maxPasswordBytes` rejects oversized password fields.
 - Untrusted values are escaped before being written to the plain-text log.
 
@@ -384,9 +384,9 @@ Directory names use the uppercase callsign with `/` replaced by `_` (for example
 - Failed logins store a summary by default: `password` and `payload` are `null`, while lengths, `passwordSha256`, `payloadSha256`, failure reason, and certificate chain details are kept. Set `archive.recordDeniedPayload=true` or use `archive.deniedPayloadSampleRate` to keep full failed payloads.
 - Malformed requests that cannot be decoded are only logged, not archived.
 - SAS does not record the source IP. To locate a device's real IP, use the EMQX client list or connection logs.
-- On Linux the archive directory is created as `0700` and files as `0600`. Payloads contain no private keys, but do contain the full certificate chain and signatures — do not share them publicly.
+- On Linux the archive directory is created as `0700` and files as `0600`. Payloads contain no private keys, but do contain the full certificate chain and signatures; they should not be shared publicly.
 - `archive.retentionDays` controls retention; `archive.maxFileBytes` is the target file-size cap (overflow goes to `.1`, `.2`, ...; a single record is never split, so a file may exceed the cap by one record); `archive.maxRecordBytes` caps each record and degrades it to a summary, a trimmed summary, or a core-fields record while always emitting valid JSON.
-- In Docker the archive lives in the `sas-data` volume. Set `TZ` if you want files split by local date (Compose defaults to `Asia/Shanghai`).
+- In Docker the archive lives in the `sas-data` volume. Set `TZ` to split files by local date (Compose defaults to `Asia/Shanghai`).
 
 Inspect recent records:
 
@@ -409,7 +409,7 @@ sas --remove-admin [--config <path>]
 sas --list-admins [--config <path>]
 ```
 
-- The **super role** requires both the server's own UID and certificate fingerprint (`user.uid == server.uid` and the cert fingerprint equals `server.certFingerprint`) — no manual configuration needed
+- The **super role** requires both the server's own UID and certificate fingerprint (`user.uid == server.uid` and the cert fingerprint equals `server.certFingerprint`) — no additional configuration is required
 - The admin list only stores regular admins (admin role), stored in the `Server.admins` array in `config.json`; entries match on UID + certificate fingerprint
 - Use `--config <path>` to specify a non-default config file location
 
@@ -423,7 +423,7 @@ docker exec -it fmo-sas dotnet sas.dll --list-admins
 
 ### Cluster Management
 
-If you have multiple MQTT Brokers sharing a single SAS instance, you can add cluster nodes:
+When multiple MQTT Brokers share a single SAS instance, cluster nodes can be added:
 
 ```bash
 # Add cluster node (interactive)
@@ -454,26 +454,26 @@ docker exec -it fmo-sas dotnet sas.dll --remove-cluster
 docker compose restart sas
 ```
 
-Set the external service's MQTT Host to a hostname or IP address reachable by devices, not to a service name on this Compose network.
+The external service's MQTT Host should be a hostname or IP address reachable by devices, rather than a service name on this Compose network.
 
 ### Startup Address Display
 
-When `http.addr` is set to `0.0.0.0`, SAS lists all available IPv4 addresses with their corresponding auth endpoint URLs at startup, making it easy to identify the access address.
+When `http.addr` is set to `0.0.0.0`, SAS lists the available IPv4 addresses with their corresponding auth endpoint URLs at startup.
 
 ---
 
-## OTA Auto-Update
+## OTA Update
 
-SAS has built-in version checking and auto-update:
+SAS has built-in version checking and update support:
 
 ```bash
 # Manually check and update to the latest version
 sas --update
 ```
 
-- **Auto-check**: Automatically checks for new versions on startup, prompts upgrade command when available
+- **Auto-check**: Checks for new versions at startup and prints the upgrade command when one is available
 - **Disable auto-check**: Set `"update": { "enabled": false }` in `config.json`
-- **Docker environment**: Automatically detects Docker runtime, suggests `docker pull` update method
+- **Docker environment**: Detects the Docker runtime and suggests updating via `docker pull`
 
 ---
 
@@ -546,14 +546,14 @@ fmo-server-authorizer-service/
 
 ```
 ~/.sas/
-├── config.json            ← Configuration (single source of truth)
+├── config.json            ← Configuration (single source)
 ├── roots/                 ← Root CA certificates
 │   └── bg5esn.json
 ├── roles/                 ← Role permission definitions
 │   ├── super.json
 │   ├── admin.json
 │   └── user.json
-├── crl/                   ← CRL cache (keyed by certificate fingerprint, auto-refreshed)
+├── crl/                   ← CRL cache (keyed by certificate fingerprint; refreshed periodically)
 │   ├── root-BG5ESN-1a2b3c4d5e6f7890/
 │   │   ├── root.json
 │   │   └── meta.json
@@ -565,11 +565,11 @@ fmo-server-authorizer-service/
         └── 2026-11-18.jsonl
 ```
 
-CRL cache directories are keyed by certificate fingerprint (`{type}-{safeName}-{fp16}`). Legacy `crl/{sn}/` caches are ignored and fetched again. With `crl.mode=strict`, authentication is denied from startup until the first CRL fetch succeeds; watch for `Root CRL updated` in the log, or start in `soft` mode to warm the cache before switching to `strict`.
+CRL cache directories are keyed by certificate fingerprint (`{type}-{safeName}-{fp16}`). Legacy `crl/{sn}/` caches are ignored and fetched again. With `crl.mode=strict`, authentication is denied from startup until the first CRL fetch succeeds; monitor the log for `Root CRL updated`, or start in `soft` mode to warm the cache before switching to `strict`.
 
-`fp16` is the first 16 hex characters (64 bits) of the SHA-256 fingerprint and only keeps directory names readable alongside `safeName`. Real deployments have very few CAs, so collisions can be ignored; even if two directories collide, every CRL is still verified with `VerifyBy` before use, so a mismatched cache is never trusted and one CA's revocation state cannot leak into another.
+`fp16` is the first 16 hex characters (64 bits) of the SHA-256 fingerprint and keeps directory names readable alongside `safeName`. Real deployments have very few CAs, so collisions can be ignored; even if two directories collide, every CRL is still verified with `VerifyBy` before use, so a mismatched cache is never trusted and one CA's revocation state cannot leak into another.
 
-Intermediate certificates only appear in login payloads, so `CrlManager` cannot know or prefetch all Intermediate CRLs at startup. In `soft` mode, the first request that introduces an Intermediate with no local cache is allowed while the CRL is fetched in the background; later requests hit the cache. Use `crl.mode=strict`, or pre-populate the cache directory, when revocation must be enforced from the very first request.
+Intermediate certificates only appear in login payloads, so `CrlManager` cannot know or prefetch all Intermediate CRLs at startup. In `soft` mode, the first request that introduces an Intermediate with no local cache is allowed while the CRL is fetched in the background; later requests hit the cache. `crl.mode=strict` should be used, or the cache directory pre-populated, when revocation must be enforced from the first request.
 
 ---
 
@@ -581,25 +581,25 @@ Intermediate certificates only appear in login payloads, so `CrlManager` cannot 
 | `Roots directory not found` | Root CA not installed, verify built-in certs exist |
 | `Root CA self-signature failed` | Certificate file corrupted, re-obtain |
 | `curl` returns empty or connection refused | Check if port 8080 is blocked by firewall |
-| CRL refresh 404 | Normal in `soft` mode; in `strict` mode authentication is denied until the CRL is published and fetched |
-| Auth always returns deny | Check certificate chain completeness, expiration, or revocation; use the log `req` ID to find the full payload in the archive |
+| CRL refresh 404 | Expected in `soft` mode and does not affect operation; in `strict` mode authentication is denied until the CRL is published and fetched |
+| Authentication consistently returns deny | Check certificate chain completeness, expiration, or revocation; use the log `req` ID to locate the full payload in the archive |
 | Archive directory is empty | Check `archive.enabled`; only requests whose password JSON can be decoded are archived |
 
 ---
 
-## Important Notes
+## Deployment Notes
 
-1. **No Sensitive Data**: All fields in `config.json` are public information (callsigns, certificate fingerprints, network addresses, etc.) — no private keys or passwords are stored. Security is guaranteed by the device-side private key.
-2. **Internal Deployment**: HTTP endpoint should listen on `127.0.0.1` or internal addresses, never exposed directly to the public internet.
-3. **Source of Truth**: After initial setup, modify configuration by editing `config.json` (restart to apply), or re-launch with CLI arguments to auto-update the config.
-4. **Upgrades**: `sas --update` automatically downloads the latest version and restarts (disable: `update.enabled = false`).
-5. **Device Side**: FMO device firmware must use SAS HTTP authenticator mode (carrying certificate info in username/password during MQTT CONNECT).
-6. **Login Archive**: Successful logins store full payloads; failed logins store summaries by default. Archive files contain the certificate chain and proof signatures (no private keys) and are intended for auditing and troubleshooting. Restrict access to the archive directory and tune `archive.retentionDays`, `archive.maxFileBytes`, and `archive.maxRecordBytes` as needed.
-7. **Entry Protection**: `username` is limited to 32 UTF-8 bytes and callsign characters only. The default global rate limit is 600 requests/minute. A callsign breaker only counts failures after certificate chain verification, so early spoofed failures cannot lock out legitimate users. Tune these in `http.rateLimit`.
+1. **No Sensitive Data**: All fields in `config.json` are public information (callsigns, certificate fingerprints, network addresses, etc.) — no private keys or passwords are stored. Security depends on the private key held by the device.
+2. **Internal Deployment**: The HTTP endpoint should listen on `127.0.0.1` or internal addresses and should not be exposed directly to the public internet.
+3. **Configuration Source**: After initial setup, configuration can be modified by editing `config.json` (restart to apply) or by re-launching with CLI arguments.
+4. **Upgrades**: `sas --update` downloads the latest version and restarts the service (or disable auto-check with `update.enabled = false`).
+5. **Device Side**: FMO device firmware must use SAS HTTP authenticator mode (carrying certificate information in username/password during MQTT CONNECT).
+6. **Login Archive**: Successful logins store full payloads; failed logins store summaries by default. Archive files contain the certificate chain and proof signatures (no private keys) and are intended for auditing and troubleshooting. Access to the archive directory should be restricted, and `archive.retentionDays`, `archive.maxFileBytes`, and `archive.maxRecordBytes` should be adjusted as needed.
+7. **Entry Protection**: `username` is limited to 32 UTF-8 bytes and callsign characters only. The default global rate limit is 600 requests/minute. A callsign breaker only counts failures after certificate chain verification, so early spoofed failures cannot affect legitimate users. These thresholds can be tuned in `http.rateLimit`.
 
 ---
 
-## Documentation
+## Related Documentation
 
 - [SAS HTTP Authentication](docs/V4.0%20SAS%20HTTP%20Authentication.md)
 - [SAS Development Guide](docs/V4.0%20SAS.NET%20Development.md)

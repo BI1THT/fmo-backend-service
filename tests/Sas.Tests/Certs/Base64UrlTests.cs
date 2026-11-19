@@ -28,12 +28,16 @@ public sealed class Base64UrlTests
         Assert.DoesNotContain('=', encoded);
     }
 
-    [Theory]
-    [InlineData("AQ==")]
-    [InlineData("AQ")]
-    public void Decode_AcceptsPaddedAndUnpaddedInput(string encoded)
+    [Fact]
+    public void Decode_AcceptsUnpaddedInput()
     {
-        Assert.Equal([1], Base64Url.Decode(encoded));
+        Assert.Equal([1], Base64Url.Decode("AQ"));
+    }
+
+    [Fact]
+    public void Decode_RejectsPadding()
+    {
+        Assert.Throws<FormatException>(() => Base64Url.Decode("AQ=="));
     }
 
     [Theory]
@@ -74,11 +78,21 @@ public sealed class Base64UrlTests
         Assert.Throws<FormatException>(() => Base64Url.Decode(encoded));
     }
 
-    [Fact]
-    public void Decode_IgnoresWhitespace_CurrentBehavior()
+    [Theory]
+    [InlineData("abcd ef")]
+    [InlineData("ab\tcd")]
+    [InlineData("ab\rcd")]
+    [InlineData("ab\ncd")]
+    public void Decode_RejectsWhitespace(string encoded)
     {
-        // Convert.FromBase64String ignores whitespace, so a value that passed
-        // the 43-character length check can still decode here.
-        Assert.Equal([0x69, 0xB7, 0x1D], Base64Url.Decode("ab cd"));
+        Assert.Throws<FormatException>(() => Base64Url.Decode(encoded));
+    }
+
+    [Theory]
+    [InlineData("ab+d")]
+    [InlineData("ab/d")]
+    public void Decode_RejectsStandardBase64Characters(string encoded)
+    {
+        Assert.Throws<FormatException>(() => Base64Url.Decode(encoded));
     }
 }
